@@ -48,6 +48,15 @@ export function gutterWidth(rowCount: number): number {
   return Math.max(MIN_GUTTER_W, digits * 7 + 14);
 }
 export const MAX_COL_W = 1200;
+/**
+ * The automatic fit a table opens with (`autoFitWidth`): no narrower than this, so a column of
+ * one-letter values stays easy to hit…
+ */
+export const AUTO_FIT_MIN_W = 60;
+/** …and no wider than this, so one long text column does not push the rest off screen. */
+export const AUTO_FIT_MAX_W = 480;
+/** Rows the automatic fit reads: about the first screen. */
+export const AUTO_FIT_SAMPLE_ROWS = 60;
 
 export interface FkRef {
   schema: string | null;
@@ -264,6 +273,19 @@ export function visibleColumns(columns: GridColumn[], state: ColumnState): GridC
   return layoutColumns(columns, state).cols;
 }
 
-export function columnWidth(col: GridColumn, state: ColumnState): number {
-  return state.widths[col.id] ?? defaultWidth(col.kind, col.name);
+/**
+ * A column's width: the one the user gave it (remembered per table), else the one the grid fitted
+ * to the first rows (`fitted`, not remembered), else one sized for its header and kind.
+ */
+export function columnWidth(
+  col: GridColumn,
+  state: ColumnState,
+  fitted?: Readonly<Record<string, number>>,
+): number {
+  return state.widths[col.id] ?? fitted?.[col.id] ?? defaultWidth(col.kind, col.name);
+}
+
+/** Clamps a measured fit (`fitWidth`) to the range a table opens with. */
+export function autoFitWidth(measured: number): number {
+  return Math.max(AUTO_FIT_MIN_W, Math.min(AUTO_FIT_MAX_W, measured));
 }

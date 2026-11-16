@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { KbdHint } from "@/components/KbdHint";
+import { useDirtyDialogGuard } from "@/hooks/useDirtyDialogGuard";
 import { cn } from "@/lib/utils";
 import type { GridColumn } from "../types";
 import { jsonError, reformatJson } from "./json";
@@ -40,6 +41,12 @@ export function JsonEditorDialog({
   const [text, setText] = useState(initialText);
   const ref = useRef<HTMLTextAreaElement>(null);
   const error = useMemo(() => jsonError(text), [text]);
+  // A stray Escape or click beside the dialog asks before it throws the edited JSON away.
+  const guard = useDirtyDialogGuard({
+    dirty: text !== initialText,
+    onClose: onCancel,
+    what: "the edited JSON",
+  });
   const save = () => {
     if (!error) onSave(text);
   };
@@ -57,8 +64,9 @@ export function JsonEditorDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onCancel()}>
+    <Dialog open onOpenChange={guard.onOpenChange}>
       <DialogContent
+        {...guard.contentProps}
         data-scope="grid-edit"
         className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(56rem,calc(100%-2rem))]"
         onOpenAutoFocus={(e) => {
@@ -118,7 +126,7 @@ export function JsonEditorDialog({
             </Button>
           </div>
           <div className="flex gap-1.5">
-            <Button variant="outline" size="sm" onClick={onCancel}>
+            <Button variant="outline" size="sm" onClick={guard.requestClose}>
               Cancel
             </Button>
             {onSetNull && (
@@ -132,6 +140,8 @@ export function JsonEditorDialog({
             </Button>
           </div>
         </DialogFooter>
+        {/* Inside the content, whose handlers keep its keys and clicks away from the grid. */}
+        {guard.confirm}
       </DialogContent>
     </Dialog>
   );

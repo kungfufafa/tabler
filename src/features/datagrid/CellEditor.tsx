@@ -29,6 +29,12 @@ export interface CellEditorProps {
   height: number;
   onCommit: (value: Value, exit: EditorExit) => void;
   onCancel: () => void;
+  /**
+   * Focus left the editor while its text does not parse. The editor closes (grabbing the focus
+   * back would fight a window or tab switch) and hands over the typed text and the error, so the
+   * grid can say so and offer to reopen the edit with that text. Without it the text is dropped.
+   */
+  onDropInvalid?: (text: string, error: string) => void;
 }
 
 type Mode = "text" | "multiline" | "json" | "choice" | "date";
@@ -76,6 +82,7 @@ export function CellEditor({
   height,
   onCommit,
   onCancel,
+  onDropInvalid,
 }: CellEditorProps) {
   const [mode, setMode] = useState<Mode>(() => initialMode(col, previous, initialText, typed));
   const [text, setText] = useState(() =>
@@ -101,8 +108,8 @@ export function CellEditor({
   };
   /**
    * Stages `t` as the cell's value and leaves the editor by `exit`; false when it does not parse
-   * (the error shows; a blur drops the edit, as it always did, while `keepOpen` — ⌘S — leaves the
-   * editor open to fix it).
+   * (the error shows; a blur closes the editor and hands the text to `onDropInvalid`, while
+   * `keepOpen` — ⌘S — leaves the editor open to fix it).
    */
   const commitText = (exit: EditorExit, t: string = text, keepOpen = false): boolean => {
     if (done.current) return false;
@@ -115,7 +122,10 @@ export function CellEditor({
     const result = parseCellText(col, t, previous, lacksFields);
     if (!result.ok) {
       setError(result.error);
-      if (exit === "blur" && !keepOpen) cancel();
+      if (exit === "blur" && !keepOpen) {
+        cancel();
+        onDropInvalid?.(t, result.error);
+      }
       return false;
     }
     commitValue(result.value, exit);

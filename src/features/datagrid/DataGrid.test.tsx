@@ -12,6 +12,7 @@ import { EMPTY_PLACEHOLDER, MISSING_PLACEHOLDER } from "@/lib/values";
 import { DataGrid, type DataGridProps, type GridViewport } from "./DataGrid";
 import { LacksFieldsContext } from "./lacksFields";
 import {
+  AUTO_FIT_MIN_W,
   buildGridColumns,
   HEADER_H,
   MIN_GUTTER_W,
@@ -1091,8 +1092,9 @@ describe("DataGrid cell menu (TablePlus order)", () => {
       "—",
       "Delete",
     ]);
-    // ⌫ is Delete's shortcut, ⌘↩ Quick Look's, ⌥⌘R Refresh's, ⌥↩ Set Value's.
-    expect(item(/^Delete/)).toHaveTextContent(formatCombo("Backspace"));
+    // ⌫ (the Delete key off macOS) is Delete's shortcut, ⌘↩ Quick Look's, ⌥⌘R Refresh's, ⌥↩ Set
+    // Value's.
+    expect(item(/^Delete/)).toHaveTextContent(formatCombo(isMac ? "Backspace" : "Delete"));
     expect(item(/^Quick Look Editor/)).toHaveTextContent(formatCombo("Mod+Enter"));
     expect(item(/^Refresh/)).toHaveTextContent(formatCombo("Mod+Alt+R"));
     expect(item(/^Set Value/)).toHaveTextContent(formatCombo("Alt+Enter"));
@@ -2530,5 +2532,144 @@ describe("DataGrid missing fields", () => {
     render(grid());
     expect(cell(1)).toHaveTextContent(EMPTY_PLACEHOLDER);
     expect(cell(2)).toHaveTextContent("(1,2)");
+  });
+});
+
+describe("DataGrid friendliness", () => {
+  const layout: ColumnState = { widths: {}, order: [], hidden: [] };
+  const headerWidth = (id: string) =>
+    parseFloat(document.querySelector<HTMLElement>(`[data-header="${id}"]`)!.style.width);
+
+  it("opens columns sized to their first rows, without remembering the fit", () => {
+    const onColumnStateChange = vi.fn();
+    setup(layout, { onColumnStateChange });
+    // "Ann" / "Bob" under "name": far narrower than a text column's 180px header width…
+    expect(headerWidth("name")).toBeGreaterThanOrEqual(AUTO_FIT_MIN_W);
+    expect(headerWidth("name")).toBeLessThan(120);
+    // …and the e-mails get the room they need.
+    expect(headerWidth("email")).toBeGreaterThan(headerWidth("name"));
+    expect(onColumnStateChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps a width the user gave a column", () => {
+    setup({ ...layout, widths: { name: 300 } });
+    expect(headerWidth("name")).toBe(300);
+  });
+
+  it("offers the empty state's action, which takes clicks the overlay lets through", () => {
+    const onClear = vi.fn();
+    render(
+      <DataGrid
+        columns={columns}
+        rowCount={0}
+        getRow={() => undefined}
+        columnState={layout}
+        emptyText="No rows match the filter"
+        emptyAction={<button onClick={onClear}>Clear Filters</button>}
+      />,
+    );
+    expect(screen.getByText("No rows match the filter")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear Filters" }));
+    expect(onClear).toHaveBeenCalledOnce();
+  });
+
+  it("shows a thin progress bar under the header while new rows are on their way", () => {
+    const { unmount } = setup(layout);
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    unmount();
+    setup(layout, { refreshing: true });
+    expect(screen.getByRole("progressbar", { name: "Loading rows" })).toBeInTheDocument();
+  });
+
+  it("a blur with text that does not parse says so and offers to reopen the edit", () => {
+    const { grid, click, onEditCommit } = setup(layout);
+    click(0, 0);
+    fireEvent.keyDown(grid, { key: "Enter" });
+    const input = screen.getByRole("textbox", { name: "Edit id" });
+    fireEvent.change(input, { target: { value: "12a" } });
+    fireEvent.blur(input);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(onEditCommit).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledOnce();
+    const [title, options] = toast.error.mock.calls[0]! as unknown as [
+      string,
+      { action: { label: string; onClick: () => void } },
+    ];
+    expect(title).toMatch(/^id: /);
+    expect(options.action.label).toBe("Edit");
+    act(() => options.action.onClick());
+    expect(screen.getByRole("textbox", { name: "Edit id" })).toHaveValue("12a");
+  });
+
+  it("the toast's Edit finds the same row again after the rows moved", () => {
+    let setList: (l: ViewRow[]) => void = () => {};
+    const onFocusCell = vi.fn();
+    function Host() {
+      const [list, set] = useState<ViewRow[]>(rows);
+      setList = set;
+      return (
+        <DataGrid
+          columns={columns}
+          rowCount={list.length}
+          getRow={(i) => list[i]}
+          columnState={layout}
+          editable
+          active
+          onFocusCell={onFocusCell}
+        />
+      );
+    }
+    render(<Host />);
+    const grid = document.querySelector<HTMLElement>('[data-scope="grid"]')!;
+    // The second row's id (pk:2).
+    fireEvent.pointerDown(document.querySelector('[data-cell][data-r="1"][data-c="0"]')!, {
+      button: 0,
+    });
+    toast.error.mockClear();
+    fireEvent.keyDown(grid, { key: "Enter" });
+    const input = screen.getByRole("textbox", { name: "Edit id" });
+    fireEvent.change(input, { target: { value: "x" } });
+    fireEvent.blur(input);
+    const [, options] = toast.error.mock.calls[0]! as unknown as [
+      string,
+      { action: { onClick: () => void } },
+    ];
+    // The rows swap places (a sort, a refresh) before the user clicks Edit.
+    act(() => setList([rows[1]!, rows[0]!]));
+    act(() => options.action.onClick());
+    expect(screen.getByRole("textbox", { name: "Edit id" })).toHaveValue("x");
+    const at = onFocusCell.mock.calls.at(-1)?.[0] as { pos: { r: number; c: number } };
+    // pk:2 is the first row now.
+    expect(at.pos.r).toBe(0);
+    expect(at.pos.c).toBe(0);
+  });
+
+  it("focuses a new row on the first column to fill, not on its auto-increment id", () => {
+    const auto: GridColumn[] = [
+      { ...col("id", "int"), hasDefault: true, isAutoInc: true },
+      col("name"),
+    ];
+    const blank: ViewRow = { key: "new:1", status: "inserted", cells: [NULL_TEXT, NULL_TEXT] };
+    const onFocusCell = vi.fn();
+    function Host() {
+      const [list, setList] = useState<ViewRow[]>([rows[0]!]);
+      return (
+        <DataGrid
+          columns={auto}
+          rowCount={list.length}
+          getRow={(i) => list[i]}
+          columnState={layout}
+          editable
+          active
+          onFocusCell={onFocusCell}
+          onAction={(a) => a.type === "newRow" && setList((l) => [...l, blank])}
+        />
+      );
+    }
+    render(<Host />);
+    act(() => void actions.run("grid.new-row"));
+    expect(onFocusCell).toHaveBeenLastCalledWith(expect.objectContaining({ pos: { r: 1, c: 1 } }));
+    // Selected, not editing: ↩ or typing starts the edit there.
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 });

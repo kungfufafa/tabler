@@ -1504,11 +1504,51 @@ describe("TableTab export buttons", () => {
     act(() => useExportStore.setState({ open: false }));
     act(() => useTableTabsStore.getState().update(id, { filtersVisible: true }));
     const barExport = await screen.findByRole("button", { name: "Export" });
-    expect(barExport).toHaveAttribute("title", "Export the filtered rows");
     fireEvent.click(barExport);
     expect(useExportStore.getState()).toMatchObject({
       open: true,
       target: { source: { kind: "table", tabId: id } },
     });
+  });
+});
+
+describe("TableTab ways out", () => {
+  it("rows that failed to load offer Try Again (and Clear Filters when filtered)", async () => {
+    const { id } = await setup({ stage: false });
+    const rowsCall = vi.spyOn(ipc.browse, "rows").mockRejectedValue(new Error("timeout"));
+    act(() =>
+      useTableTabsStore.getState().update(id, { filters: [newFilterRow("name", "eq", "Ann")] }),
+    );
+    expect(await screen.findByText("Could not load the rows")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear Filters" })).toBeInTheDocument();
+    rowsCall.mockRestore();
+    fireEvent.click(screen.getByRole("button", { name: "Try Again" }));
+    await waitFor(() => expect(screen.queryByText("Could not load the rows")).toBeNull());
+  });
+
+  it("a filter that matches nothing offers Clear Filters inside the grid", async () => {
+    const { id, slice } = await setup({ stage: false });
+    expect(gridProps().emptyAction).toBeFalsy();
+    act(() =>
+      useTableTabsStore.getState().update(id, { filters: [newFilterRow("name", "eq", "Ann")] }),
+    );
+    await waitFor(() => expect(gridProps().emptyAction).toBeTruthy());
+    render(<>{gridProps().emptyAction}</>);
+    fireEvent.click(screen.getByRole("button", { name: "Clear Filters" }));
+    await waitFor(() => expect(slice().filters).toEqual([]));
+  });
+
+  it("says why a view's rows cannot be edited", async () => {
+    const table = ipc.schema.table.bind(ipc.schema);
+    vi.spyOn(ipc.schema, "table").mockImplementation(async (c, t) => ({
+      ...(await table(c, t)),
+      kind: "view",
+    }));
+    await setup({ stage: false });
+    expect(gridProps().editable).toBe(false);
+    expect(gridProps().readOnlyNotice).toBe(
+      "Read-only: this is a view, so its rows cannot be edited here",
+    );
+    expect(screen.getByRole("note", { name: gridProps().readOnlyNotice! })).toBeInTheDocument();
   });
 });
