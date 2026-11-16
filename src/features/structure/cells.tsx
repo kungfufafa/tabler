@@ -1,5 +1,5 @@
 import { ChevronDown } from "lucide-react";
-import { useState, type KeyboardEvent, type ReactNode } from "react";
+import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -11,6 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { OrderedPicker, type PrefixLengths } from "./parts";
@@ -246,17 +247,22 @@ export function ColumnsCell({
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<string[]>([...value]);
+  // Escape backs out of the pick; any other close (Done, a click outside, Tab away) applies it.
+  const cancelled = useRef(false);
   const text = value.join(", ");
+  const onOpenChange = (o: boolean) => {
+    if (o) setDraft([...value]);
+    else if (
+      !cancelled.current &&
+      (allowEmpty || draft.length > 0) &&
+      draft.join("\u0000") !== value.join("\u0000")
+    )
+      onChange(draft);
+    cancelled.current = false;
+    setOpen(o);
+  };
   return (
-    <Popover
-      open={open}
-      onOpenChange={(o) => {
-        if (o) setDraft([...value]);
-        else if ((allowEmpty || draft.length > 0) && draft.join("\u0000") !== value.join("\u0000"))
-          onChange(draft);
-        setOpen(o);
-      }}
-    >
+    <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild disabled={disabled}>
         <button
           type="button"
@@ -270,7 +276,13 @@ export function ColumnsCell({
           <Chevron />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 gap-2 p-3 text-xs">
+      <PopoverContent
+        align="start"
+        className="w-80 gap-2 p-3 text-xs"
+        onEscapeKeyDown={() => {
+          cancelled.current = true;
+        }}
+      >
         <p className="text-muted-foreground text-xs">{hint}</p>
         <OrderedPicker
           label={label}
@@ -279,6 +291,12 @@ export function ColumnsCell({
           onChange={setDraft}
           lengths={lengths}
         />
+        <div className="flex items-center gap-2">
+          <p className="text-muted-foreground flex-1 text-xs">Esc cancels</p>
+          <Button type="button" size="xs" onClick={() => onOpenChange(false)}>
+            Done
+          </Button>
+        </div>
       </PopoverContent>
     </Popover>
   );
@@ -308,4 +326,4 @@ export function CellPopover({
   );
 }
 
-export { CELL_BUTTON };
+export { CELL_BUTTON, Chevron as CellChevron };

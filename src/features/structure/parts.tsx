@@ -1,12 +1,22 @@
 import { useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { FormField } from "@/components/FormField";
 import { SectionLabel } from "@/components/SectionLabel";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { actions } from "@/features/palette/actions";
+import { formatCombo, isMac } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
 import { MAX_PREFIX_LENGTH } from "./columnEdits";
-import { entryBase, entryLength, withEntryLength } from "./model";
+import { entryBase, entryLength, withEntryLength, type RowStatus } from "./model";
 
 /**
  * Header row of the section tables: sticks right under the section bar while the body scrolls
@@ -122,7 +132,8 @@ export function CellInput({
   onLeave,
 }: {
   value: string;
-  onCommit: (raw: string) => void;
+  /** Return false to refuse the edit: the cell then keeps the typed text, marked as invalid. */
+  onCommit: (raw: string) => boolean | void;
   /** Called when focus leaves the cell (after any commit), with what it holds. */
   onLeave?: (raw: string) => void;
   /** `<row>|<field>` for ↑/↓ navigation. */
@@ -140,13 +151,24 @@ export function CellInput({
   // Set while ↑/↓ moves focus: that focus change blurs this input synchronously, before React
   // re-renders, and the blur must not commit the same draft a second time.
   const moving = useRef(false);
+  // A refused edit keeps the typed text, selected and marked, so it can be fixed rather than
+  // retyped; the next keystroke or Escape clears the mark.
+  const [invalid, setInvalid] = useState(false);
   if (shown !== value) {
     setShown(value);
     setDraft(value);
+    setInvalid(false);
   }
-  const commit = () => {
-    if (draft !== value) onCommit(draft);
+  /** False when the edit was refused and the cell kept the draft. */
+  const commit = (input?: HTMLInputElement): boolean => {
+    if (draft !== value && onCommit(draft) === false) {
+      setInvalid(true);
+      input?.select();
+      return false;
+    }
+    setInvalid(false);
     setDraft(value);
+    return true;
   };
   const onBlur = () => {
     const raw = draft;
@@ -162,12 +184,13 @@ export function CellInput({
     const mod = e.metaKey || e.ctrlKey;
     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      commit();
+      commit(e.currentTarget);
     } else if (e.key === "Escape") {
       if (draft !== value) {
         e.preventDefault();
         e.stopPropagation();
         setDraft(value);
+        setInvalid(false);
       } else {
         // Leave the cell but stay in the grid so its shortcuts (⌘N, ⌘Z, ⌘S…) keep working.
         const grid = e.currentTarget.closest<HTMLElement>("[data-scope='grid']");
@@ -176,8 +199,7 @@ export function CellInput({
       }
     } else if (mod && !e.shiftKey && e.key.toLowerCase() === "s") {
       e.preventDefault();
-      commit();
-      void actions.run("grid.commit");
+      if (commit(e.currentTarget)) void actions.run("grid.commit");
     } else if (
       (e.key === "ArrowUp" || e.key === "ArrowDown") &&
       !list &&
@@ -186,7 +208,7 @@ export function CellInput({
       !e.shiftKey
     ) {
       e.preventDefault();
-      commit();
+      if (!commit(e.currentTarget)) return;
       moving.current = true;
       try {
         moveFocus(e.currentTarget, e.key === "ArrowUp" ? -1 : 1);
@@ -202,7 +224,11 @@ export function CellInput({
       data-cell-key={cellKey}
       aria-label={label}
       value={draft}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        setInvalid(false);
+      }}
+      aria-invalid={invalid || undefined}
       onBlur={onBlur}
       onKeyDown={onKeyDown}
       onMouseEnter={onMouseEnter}
@@ -216,9 +242,113 @@ export function CellInput({
       className={cn(
         "hover:border-border focus:border-ring focus:bg-surface placeholder:text-muted-foreground h-6 w-full min-w-0 rounded-sm border border-transparent bg-transparent px-1.5 text-xs outline-none read-only:hover:border-transparent",
         readOnly && "cursor-default",
+        invalid && "border-error hover:border-error focus:border-error",
         className,
       )}
     />
+  );
+}
+
+/** The key that drops the focused structure row (`rowDeleteKey` takes either). */
+const DELETE_ROW_KEY = isMac ? "Backspace" : "Delete";
+
+/**
+ * The keys next to a menu item ("⌘I", "Ctrl+I"). Hidden from the accessible name, so the item is
+ * still announced (and found) as "Add Column".
+ */
+export function MenuKeys({ combo }: { combo: string }) {
+  return <ContextMenuShortcut aria-hidden>{formatCombo(combo)}</ContextMenuShortcut>;
+}
+
+/** "⌫" / "Delete" next to a Delete / Restore menu item of a structure row. */
+export function DeleteRowShortcut() {
+  return <MenuKeys combo={DELETE_ROW_KEY} />;
+}
+
+/** Copy Name of a structure row's menu. */
+export function CopyNameItem({ name }: { name: string }) {
+  return <ContextMenuItem onSelect={() => copyName(name)}>Copy Name</ContextMenuItem>;
+}
+
+function copyName(name: string): void {
+  const clip = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+  if (!clip) {
+    toast.error("Could not copy");
+    return;
+  }
+  void clip.writeText(name).then(
+    () => toast.success("Copied name", { description: name }),
+    () => toast.error("Could not copy"),
+  );
+}
+
+/**
+ * Right-click menu of an index, check, foreign key or trigger row, like the column rows have:
+ * Add, Edit, Copy Name, then Delete / Restore, with the keys that do the same on the row.
+ * Without any action (a read-only grid with nothing to copy) the row is returned as is.
+ */
+export function RowContextMenu({
+  children,
+  what,
+  name,
+  status,
+  onAdd,
+  addKeys,
+  onEdit,
+  editLabel,
+  onDrop,
+  onRestore,
+}: {
+  /** The `<tr>`. */
+  children: ReactNode;
+  /** "Index", "Check", "Foreign Key", "Trigger". */
+  what: string;
+  name: string | null;
+  status: RowStatus;
+  onAdd?: () => void;
+  /** The shortcut that adds one while the grid has focus (⌘I for indexes). */
+  addKeys?: string | null;
+  onEdit?: () => void;
+  editLabel?: string;
+  /** Left out where the row cannot be dropped (read-only, or an unnamed SQLite key). */
+  onDrop?: () => void;
+  onRestore?: () => void;
+}) {
+  const dropped = status === "dropped";
+  const drop = dropped ? onRestore : onDrop;
+  if (!onAdd && !onEdit && !name && !drop) return <>{children}</>;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="min-w-48" aria-label={`${what} ${name ?? ""}`.trim()}>
+        {onAdd && (
+          <ContextMenuItem onSelect={onAdd}>
+            Add {what}
+            {addKeys && <MenuKeys combo={addKeys} />}
+          </ContextMenuItem>
+        )}
+        {onEdit && !dropped && (
+          <ContextMenuItem onSelect={onEdit}>
+            {editLabel ?? `Edit ${what}…`}
+            <MenuKeys combo="Enter" />
+          </ContextMenuItem>
+        )}
+        {name && <CopyNameItem name={name} />}
+        {drop && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={drop}>
+              {dropped
+                ? `Restore ${what}`
+                : status === "added"
+                  ? `Remove New ${what}`
+                  : `Delete ${what}`}
+              <DeleteRowShortcut />
+            </ContextMenuItem>
+          </>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 

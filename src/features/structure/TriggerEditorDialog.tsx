@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useDirtyDialogGuard } from "@/hooks/useDirtyDialogGuard";
 import { FormError } from "@/components/FormError";
 import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
@@ -35,21 +36,47 @@ export function TriggerEditorDialog({
   /** Returns an error message to show, or null when staged. */
   onStage: (key: string | null, sql: string) => string | null;
 }) {
+  // The form reports whether its SQL differs from what it opened with, so a stray Escape or a
+  // click outside asks before throwing a trigger body away.
+  const [dirty, setDirty] = useState(false);
+  // Another trigger (or none) opened from outside starts clean.
+  const [shownFor, setShownFor] = useState(editing);
+  if (shownFor !== editing) {
+    setShownFor(editing);
+    setDirty(false);
+  }
+  const close = () => {
+    setDirty(false);
+    onClose();
+  };
+  const guard = useDirtyDialogGuard({
+    dirty: editing !== null && dirty,
+    onClose: close,
+    what: "your trigger changes",
+  });
   return (
-    <Dialog open={editing !== null} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(56rem,calc(100%-2rem))]">
-        {editing && (
-          <TriggerForm
-            key={editing.key ?? "new"}
-            editing={editing}
-            dialect={dialect}
-            tableName={tableName}
-            onClose={onClose}
-            onStage={onStage}
-          />
-        )}
-      </DialogContent>
-    </Dialog>
+    <>
+      <Dialog open={editing !== null} onOpenChange={guard.onOpenChange}>
+        <DialogContent
+          className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(56rem,calc(100%-2rem))]"
+          {...guard.contentProps}
+        >
+          {editing && (
+            <TriggerForm
+              key={editing.key ?? "new"}
+              editing={editing}
+              dialect={dialect}
+              tableName={tableName}
+              onClose={close}
+              onCancel={guard.requestClose}
+              onDirtyChange={setDirty}
+              onStage={onStage}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+      {guard.confirm}
+    </>
   );
 }
 
@@ -58,12 +85,18 @@ function TriggerForm({
   dialect,
   tableName,
   onClose,
+  onCancel,
+  onDirtyChange,
   onStage,
 }: {
   editing: NonNullable<TriggerEditing>;
   dialect: Dialect;
   tableName: string;
+  /** Closes at once: after staging, or for a read-only trigger. */
   onClose: () => void;
+  /** Cancel: asks first while the SQL is changed. */
+  onCancel: () => void;
+  onDirtyChange: (dirty: boolean) => void;
   onStage: (key: string | null, sql: string) => string | null;
 }) {
   const [sql, setSql] = useState(editing.sql);
@@ -95,6 +128,7 @@ function TriggerForm({
         onChange={(v) => {
           setSql(v);
           setError(null);
+          onDirtyChange(!editing.readOnly && v !== editing.sql);
         }}
         dialect={dialect}
         label="Trigger SQL"
@@ -110,7 +144,7 @@ function TriggerForm({
       )}
       {error && <FormError>{error}</FormError>}
       <DialogFooter className="items-center">
-        <Button variant="outline" size="sm" onClick={onClose}>
+        <Button variant="outline" size="sm" onClick={onCancel}>
           {editing.readOnly ? "Close" : "Cancel"}
         </Button>
         {!editing.readOnly && (

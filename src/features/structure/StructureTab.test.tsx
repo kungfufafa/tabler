@@ -322,16 +322,27 @@ describe("StructureTab", () => {
     await waitFor(() => expect(current()).not.toHaveProperty("preview"));
   });
 
-  it("↑/↓ commits a cell once (one toast for an invalid name)", async () => {
+  it("a refused name keeps what was typed, marked, until it is fixed or reverted", async () => {
     const { ops } = await setup();
     const input = cell("c:nickname:name");
     input.focus();
     fireEvent.change(input, { target: { value: "email" } });
+    // ↑/↓ commits once (one toast) and stays on the refused cell instead of moving on
     fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(cell("c:role:name"));
+    expect(document.activeElement).toBe(input);
     expect(toast.error).toHaveBeenCalledTimes(1);
     expect(toast.error).toHaveBeenCalledWith("A column named “email” already exists");
     expect(ops()).toEqual([]);
+    expect(input).toHaveValue("email");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    // Enter refuses it again, still without throwing the text away
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveValue("email");
+    // the next keystroke clears the mark; Escape goes back to the stored name
+    fireEvent.change(input, { target: { value: "emails" } });
+    expect(input).not.toHaveAttribute("aria-invalid");
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(input).toHaveValue("nickname");
   });
 
   it("MySQL: a new column offers no auto increment box (ADD COLUMN cannot key it)", async () => {
