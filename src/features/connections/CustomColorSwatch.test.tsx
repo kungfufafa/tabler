@@ -53,18 +53,18 @@ describe("custom connection colours (colour picker + Hex)", () => {
     const { rerender } = render(<CustomColorSwatch value="#aaaaaa" onChange={onChange} />);
     await user.click(screen.getByRole("radio", { name: "Custom…" }));
     // The picker starts from the saved colour.
-    expect(screen.getByLabelText("Colour picker")).toHaveValue("#aaaaaa");
-    fireEvent.change(screen.getByLabelText("Colour picker"), { target: { value: "#303030" } });
+    expect(screen.getByLabelText("Color picker")).toHaveValue("#aaaaaa");
+    fireEvent.change(screen.getByLabelText("Color picker"), { target: { value: "#303030" } });
     expect(onChange).toHaveBeenLastCalledWith("#303030");
     // The save of an earlier step of the drag finishes: its colour comes back as `value`.
     rerender(<CustomColorSwatch value="#101010" onChange={onChange} />);
-    expect(screen.getByLabelText("Colour picker")).toHaveValue("#303030");
+    expect(screen.getByLabelText("Color picker")).toHaveValue("#303030");
     expect(screen.getByLabelText("Hex")).toHaveValue("#303030");
     // Closed and opened again, it starts from the saved colour once more.
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByLabelText("Colour picker")).toBeNull());
+    await waitFor(() => expect(screen.queryByLabelText("Color picker")).toBeNull());
     await user.click(screen.getByRole("radio", { name: "Custom…" }));
-    expect(screen.getByLabelText("Colour picker")).toHaveValue("#101010");
+    expect(screen.getByLabelText("Color picker")).toHaveValue("#101010");
     expect(screen.getByLabelText("Hex")).toHaveValue("#101010");
   });
 });

@@ -37,10 +37,10 @@ export function InstallHelpNote({
   return (
     <div
       role="note"
-      className="border-warning/40 bg-warning/5 flex flex-col gap-1.5 rounded-md border px-2 py-1.5 text-[11px] leading-4"
+      className="border-warning/40 bg-warning/10 flex flex-col gap-1.5 rounded-md border px-2 py-1.5 text-xs leading-4"
     >
       <div className="text-warning flex items-start gap-1.5">
-        <TriangleAlert className="mt-px size-3.5 shrink-0" />
+        <TriangleAlert aria-hidden className="mt-px size-3.5 shrink-0" />
         <span>{help.reason}</span>
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
@@ -69,7 +69,7 @@ export function InstallHelpNote({
           type="button"
           variant="link"
           size="xs"
-          className="h-auto px-0 text-[11px]"
+          className="h-auto px-0 text-xs"
           onClick={download}
         >
           <Download /> {help.download.label}
@@ -90,7 +90,7 @@ export function InstallHelpNote({
                     disabled={disabled}
                     title={o.label}
                     onClick={() => void install(o.formula)}
-                    className="text-foreground font-mono underline-offset-2 hover:underline"
+                    className="text-foreground focus-visible:ring-ring/50 rounded-sm font-mono underline-offset-2 outline-none hover:underline focus-visible:ring-2"
                   >
                     {o.formula}
                   </button>

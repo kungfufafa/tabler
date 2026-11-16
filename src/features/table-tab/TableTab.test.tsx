@@ -171,7 +171,7 @@ describe("TableTab commit (the workspace commit, with this tab's rows)", () => {
     const apply = vi.spyOn(ipc.workspace, "apply");
     await act(() => actions.run("grid.commit"));
     expect(apply).not.toHaveBeenCalled();
-    expect(await screen.findByText("Preview changes")).toBeInTheDocument();
+    expect(await screen.findByText("Preview Changes")).toBeInTheDocument();
     // The sheet groups the statements by tab.
     expect(await screen.findByRole("region", { name: /users/ })).toHaveTextContent(/INSERT INTO/);
     expect(preview).toHaveBeenCalled();
@@ -193,7 +193,7 @@ describe("TableTab commit (the workspace commit, with this tab's rows)", () => {
     // The tab reloads its rows.
     expect(slice().refreshToken).toBe(before + 1);
     expect(toast.success).toHaveBeenCalled();
-    expect(screen.queryByText("Preview changes")).not.toBeInTheDocument();
+    expect(screen.queryByText("Preview Changes")).not.toBeInTheDocument();
   });
 
   it("a successful commit deselects the grid's rows (TablePlus #2979)", async () => {
@@ -209,7 +209,7 @@ describe("TableTab commit (the workspace commit, with this tab's rows)", () => {
     const apply = vi.spyOn(ipc.workspace, "apply");
     await act(() => actions.run("grid.commit"));
     expect(apply).not.toHaveBeenCalled();
-    expect(await screen.findByText("Preview changes")).toBeInTheDocument();
+    expect(await screen.findByText("Preview Changes")).toBeInTheDocument();
     expect(screen.getByText(/^No primary key: each UPDATE\/DELETE matches/)).toBeInTheDocument();
   });
 
@@ -244,7 +244,7 @@ describe("TableTab commit (the workspace commit, with this tab's rows)", () => {
       durationMs: 1,
     });
     await act(() => actions.run("grid.commit"));
-    expect(await screen.findByText("Preview changes")).toBeInTheDocument();
+    expect(await screen.findByText("Preview Changes")).toBeInTheDocument();
     expect(screen.getByText(/INSERT INTO users DEFAULT VALUES/)).toBeInTheDocument();
     expect(screen.getByText("null value in column email")).toBeInTheDocument();
     expect(screen.getByText("All changes were reverted.")).toBeInTheDocument();
@@ -257,7 +257,7 @@ describe("TableTab commit (the workspace commit, with this tab's rows)", () => {
     const apply = vi.spyOn(ipc.workspace, "apply");
     await act(() => actions.run("grid.preview"));
     expect(apply).not.toHaveBeenCalled();
-    expect(await screen.findByText("Preview changes")).toBeInTheDocument();
+    expect(await screen.findByText("Preview Changes")).toBeInTheDocument();
   });
 
   it("⇧⌘⌫ discards the tab's staged rows with the rest of the workspace", async () => {
@@ -292,7 +292,7 @@ describe("TableTab commit (the workspace commit, with this tab's rows)", () => {
     fireEvent.click(next);
     fireEvent.click(await screen.findByRole("button", { name: "Commit…" }));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByText("Preview changes")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Preview Changes")).not.toBeInTheDocument());
     // A later ⌘S applies, but the dismissed page change does not come back.
     await act(() => actions.run("grid.commit"));
     expect(apply).toHaveBeenCalledOnce();
@@ -443,7 +443,7 @@ describe("TableTab grid actions", () => {
     });
     const role = colIndex("role");
     act(() => gridProps().onAction!({ type: "setDefault", cells: [{ r: 0, c: role }] }));
-    expect(toast.message).toHaveBeenCalledWith("SQLite can't set an existing value to DEFAULT", {
+    expect(toast.message).toHaveBeenCalledWith("SQLite cannot set an existing value to DEFAULT", {
       description: "DEFAULT works on new rows only.",
     });
     expect(pending()).toBe(0);
@@ -613,7 +613,7 @@ describe("TableTab filters", () => {
     );
     expect(await screen.findByText("1 pending change")).toBeInTheDocument();
     expect(slice().filters).toEqual([]);
-    fireEvent.click(screen.getByRole("button", { name: "Discard and continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard and Continue" }));
     expect(slice().filters).toEqual([expect.objectContaining({ column: "name", value: "Ann" })]);
   });
 
@@ -656,9 +656,9 @@ describe("TableTab filters", () => {
     await setup({ stage: false });
     await waitFor(() => expect(actions.has("grid.columns")).toBe(true));
     await act(() => actions.run("grid.columns"));
-    expect(await screen.findByText("Show all")).toBeInTheDocument();
+    expect(await screen.findByText("Show All")).toBeInTheDocument();
     await act(() => actions.run("grid.columns"));
-    await waitFor(() => expect(screen.queryByText("Show all")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Show All")).not.toBeInTheDocument());
   });
 });
 
@@ -808,21 +808,21 @@ describe("TableTab bottom bar", () => {
     await waitFor(() => expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument());
 
     fireEvent.click(settings());
-    const last = await screen.findByRole("button", { name: "Last page" });
+    const last = await screen.findByRole("button", { name: "Last Page" });
     await waitFor(() => expect(last).toBeEnabled());
     fireEvent.click(last);
     await waitFor(() => expect(slice().offset).toBe(990));
 
     fireEvent.click(settings());
-    fireEvent.click(await screen.findByRole("button", { name: "First page" }));
+    fireEvent.click(await screen.findByRole("button", { name: "First Page" }));
     await waitFor(() => expect(slice().offset).toBe(0));
 
     fireEvent.click(settings());
-    fireEvent.click(await screen.findByRole("button", { name: "Count rows exactly" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Count Rows Exactly" }));
     expect(count).toHaveBeenCalledWith(info.connectionId, users, null, true);
     await waitFor(() => expect(summary).toHaveTextContent(/^1–10 of 50 rows/));
     fireEvent.click(settings());
-    expect(await screen.findByRole("button", { name: "Count rows exactly" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Count Rows Exactly" })).toBeDisabled();
   });
 
   it("an estimated count in the summary is exact on a click", async () => {
@@ -848,7 +848,7 @@ describe("TableTab bottom bar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Go" }));
     expect(await screen.findByText("1 pending change")).toBeInTheDocument();
     expect(slice().offset).toBe(0);
-    fireEvent.click(screen.getByRole("button", { name: "Discard and continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard and Continue" }));
     expect(slice().offset).toBe(30);
   });
 });
@@ -915,7 +915,7 @@ describe("TableTab row details", () => {
     expect(gridProps().columns[role]!.hasDefault).toBe(true);
     act(() => edit(notNull, { t: "null" }));
     act(() => edit(role, { t: "default" }));
-    expect(toast.message).toHaveBeenCalledWith("SQLite can't set an existing value to DEFAULT", {
+    expect(toast.message).toHaveBeenCalledWith("SQLite cannot set an existing value to DEFAULT", {
       description: "DEFAULT works on new rows only.",
     });
     expect(pending()).toBe(0);
@@ -986,7 +986,7 @@ describe("TableTab M8 grid features", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^Commit/ }));
     await waitFor(() => expect(guard.calls).toHaveLength(1));
     expect(apply).not.toHaveBeenCalled();
-    expect(screen.getByText("Preview changes")).toBeInTheDocument();
+    expect(screen.getByText("Preview Changes")).toBeInTheDocument();
   });
 
   it("several selected rows make the sidebar a bulk edit", async () => {
@@ -1216,10 +1216,10 @@ describe("TableTab exact count with a custom estimate threshold", () => {
     const summary = screen.getByTestId("row-summary");
     await waitFor(() => expect(summary).toHaveTextContent(/^1–10 of ~1,000 rows/));
     fireEvent.click(screen.getByRole("button", { name: "Pagination settings" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Count rows exactly" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Count Rows Exactly" }));
     await waitFor(() => expect(summary).toHaveTextContent(/^1–10 of 50 rows/));
     fireEvent.click(screen.getByRole("button", { name: "Pagination settings" }));
-    expect(await screen.findByRole("button", { name: "Count rows exactly" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Count Rows Exactly" })).toBeDisabled();
   });
 });
 

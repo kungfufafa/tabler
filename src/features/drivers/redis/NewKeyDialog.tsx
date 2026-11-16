@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useId, useState } from "react";
+import { FormError } from "@/components/FormError";
+import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,6 +33,7 @@ export function NewKeyDialog({
   db: number;
   done: (args: RedisNewKeyArgs | null) => void;
 }) {
+  const uid = useId();
   const [open, setOpen] = useState(true);
   const [name, setName] = useState("");
   const [type, setType] = useState("string");
@@ -54,51 +57,73 @@ export function NewKeyDialog({
     <Dialog open={open} onOpenChange={(o) => !o && finish(null)}>
       <DialogContent className="sm:max-w-[34rem]">
         <DialogHeader>
-          <DialogTitle>New key in db{db}</DialogTitle>
-          <DialogDescription>Refused when a key of this name exists.</DialogDescription>
+          <DialogTitle className="text-sm">New Key in db{db}</DialogTitle>
+          <DialogDescription className="text-xs">
+            Refused when a key of this name exists.
+          </DialogDescription>
         </DialogHeader>
-        <Input
-          aria-label="Key name"
-          placeholder="user:1"
-          className="font-mono"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          spellCheck={false}
-          autoFocus
-        />
-        <Select value={type} onValueChange={setType}>
-          <SelectTrigger aria-label="Type" className="w-64">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {NEW_KEY_TYPES.map(([id, label]) => (
-              <SelectItem key={id} value={id}>
-                {label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Textarea
-          aria-label="Value"
-          placeholder={VALUE_HINT[type]}
-          className="min-h-28 font-mono text-xs"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          spellCheck={false}
-        />
-        <Input
-          aria-label="TTL (seconds)"
-          placeholder="TTL in seconds (empty: no expiry)"
-          className="w-64 font-mono"
-          value={ttl}
-          onChange={(e) => setTtl(e.target.value)}
-        />
-        {problem && name !== "" && <p className="text-destructive text-xs">{problem}</p>}
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="Key name" htmlFor={`${uid}-name`}>
+              <Input
+                id={`${uid}-name`}
+                placeholder="user:1"
+                className="h-7 rounded-md font-mono text-xs md:text-xs"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                spellCheck={false}
+                autoFocus
+              />
+            </FormField>
+            <FormField label="Type" htmlFor={`${uid}-type`}>
+              <Select value={type} onValueChange={setType}>
+                <SelectTrigger id={`${uid}-type`} size="sm" className="w-full text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {NEW_KEY_TYPES.map(([id, label]) => (
+                    <SelectItem key={id} value={id} className="text-xs">
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+          </div>
+          <FormField label="Value" htmlFor={`${uid}-value`}>
+            <Textarea
+              id={`${uid}-value`}
+              placeholder={VALUE_HINT[type]}
+              className="min-h-28 rounded-md font-mono text-xs md:text-xs"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              spellCheck={false}
+            />
+          </FormField>
+          <div className="grid grid-cols-2 gap-3">
+            <FormField
+              label="TTL (seconds)"
+              htmlFor={`${uid}-ttl`}
+              hint="Empty: the key never expires"
+            >
+              <Input
+                id={`${uid}-ttl`}
+                placeholder="Optional"
+                aria-describedby={`${uid}-ttl-hint`}
+                className="h-7 rounded-md font-mono text-xs md:text-xs"
+                value={ttl}
+                onChange={(e) => setTtl(e.target.value)}
+              />
+            </FormField>
+          </div>
+          {problem && name !== "" && <FormError>{problem}</FormError>}
+        </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => finish(null)}>
+          <Button variant="outline" size="sm" onClick={() => finish(null)}>
             Cancel
           </Button>
           <Button
+            size="sm"
             disabled={problem !== null}
             onClick={() =>
               parsed.ok &&

@@ -123,7 +123,7 @@ export function DynamoFields({ form, hasStoredPassword }: KindFieldsProps) {
         id={`${uid}-${key}`}
         {...register(`driverParams.${key}` as Path<ConnectionFormValues>)}
         placeholder={placeholder}
-        className="font-mono"
+        className="font-mono text-sm"
         autoComplete="off"
         spellCheck={false}
         list={list}
@@ -228,7 +228,7 @@ export function DynamoFields({ form, hasStoredPassword }: KindFieldsProps) {
           {...register("database")}
           list={`${uid}-regions`}
           placeholder="us-east-1"
-          className="font-mono"
+          className="font-mono text-sm"
           autoComplete="off"
           spellCheck={false}
         />

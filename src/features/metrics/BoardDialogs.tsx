@@ -20,7 +20,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { FormError } from "@/components/FormError";
+import { FormField } from "@/components/FormField";
 import { ipc, toIpcError, type MetricsBoard } from "@/lib/ipc";
 import { pickBoardSavePath } from "./open";
 
@@ -36,12 +37,15 @@ export function ExportBoardDialog({
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** The passwords differ: shown on the Confirm field, unlike a failed export. */
+  const [mismatch, setMismatch] = useState(false);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (!board) return;
     setPassword("");
     setConfirm("");
     setError(null);
+    setMismatch(false);
     setBusy(false);
   }, [board]);
 
@@ -49,7 +53,7 @@ export function ExportBoardDialog({
     e.preventDefault();
     if (!board) return;
     if (password !== confirm) {
-      setError("The passwords do not match");
+      setMismatch(true);
       return;
     }
     const path = (await pickBoardSavePath(board.name))?.trim();
@@ -71,49 +75,51 @@ export function ExportBoardDialog({
       <DialogContent className="sm:max-w-md">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>Export Board</DialogTitle>
-            <DialogDescription>
+            <DialogTitle className="text-sm">Export Board</DialogTitle>
+            <DialogDescription className="text-xs">
               “{board?.name}” with its objects and queries, as a .tablerboard file. A password
               encrypts the file.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
-            <Label htmlFor={`${id}-pw`} className="text-xs">
-              Password
-            </Label>
-            <Input
-              id={`${id}-pw`}
-              type="password"
-              autoComplete="new-password"
-              placeholder="Optional"
-              value={password}
-              className="h-7 text-xs md:text-xs"
-              onChange={(e) => {
-                setPassword(e.target.value);
-                setError(null);
-              }}
-            />
-            <Label htmlFor={`${id}-confirm`} className="text-xs">
-              Confirm
-            </Label>
-            <Input
-              id={`${id}-confirm`}
-              type="password"
-              autoComplete="new-password"
-              value={confirm}
-              disabled={password === ""}
-              className="h-7 text-xs md:text-xs"
-              onChange={(e) => {
-                setConfirm(e.target.value);
-                setError(null);
-              }}
-            />
+          <div className="flex flex-col gap-3">
+            <FormField label="Password" htmlFor={`${id}-pw`}>
+              <Input
+                id={`${id}-pw`}
+                type="password"
+                autoComplete="new-password"
+                placeholder="Optional"
+                value={password}
+                className="h-7 rounded-md text-xs md:text-xs"
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  setError(null);
+                  setMismatch(false);
+                }}
+              />
+            </FormField>
+            <FormField
+              label="Confirm"
+              htmlFor={`${id}-confirm`}
+              error={mismatch ? "The passwords do not match" : null}
+            >
+              <Input
+                id={`${id}-confirm`}
+                type="password"
+                autoComplete="new-password"
+                value={confirm}
+                disabled={password === ""}
+                aria-invalid={mismatch}
+                aria-describedby={mismatch ? `${id}-confirm-error` : undefined}
+                className="h-7 rounded-md text-xs md:text-xs"
+                onChange={(e) => {
+                  setConfirm(e.target.value);
+                  setError(null);
+                  setMismatch(false);
+                }}
+              />
+            </FormField>
           </div>
-          {error && (
-            <p role="alert" className="text-error text-xs">
-              {error}
-            </p>
-          )}
+          {error && <FormError>{error}</FormError>}
           <DialogFooter>
             <Button type="button" variant="outline" size="sm" onClick={onClose}>
               Cancel
@@ -173,31 +179,26 @@ export function ImportPasswordDialog({
       <DialogContent className="sm:max-w-md">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>Import Board</DialogTitle>
-            <DialogDescription>This board file is encrypted. Enter its password.</DialogDescription>
+            <DialogTitle className="text-sm">Import Board</DialogTitle>
+            <DialogDescription className="text-xs">
+              This board file is encrypted. Enter its password.
+            </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor={`${id}-pw`} className="text-xs">
-              Password
-            </Label>
+          <FormField label="Password" htmlFor={`${id}-pw`} error={error}>
             <Input
               id={`${id}-pw`}
               type="password"
               autoFocus
               value={password}
               aria-invalid={error !== null}
-              className="h-7 text-xs md:text-xs"
+              aria-describedby={error ? `${id}-pw-error` : undefined}
+              className="text-sm"
               onChange={(e) => {
                 setPassword(e.target.value);
                 setError(null);
               }}
             />
-            {error && (
-              <p role="alert" className="text-error text-xs">
-                {error}
-              </p>
-            )}
-          </div>
+          </FormField>
           <DialogFooter>
             <Button type="button" variant="outline" size="sm" onClick={onClose}>
               Cancel
@@ -224,16 +225,17 @@ export function DeleteBoardDialog({
 }) {
   return (
     <AlertDialog open={board !== null} onOpenChange={(open) => !open && onClose()}>
-      <AlertDialogContent size="sm" className="data-[size=sm]:sm:max-w-md">
+      <AlertDialogContent className="data-[size=default]:sm:max-w-md">
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete “{board?.name}”?</AlertDialogTitle>
-          <AlertDialogDescription>
+          <AlertDialogTitle className="text-sm">Delete “{board?.name}”?</AlertDialogTitle>
+          <AlertDialogDescription className="text-xs">
             Its charts, inputs and queries are deleted too. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
           <AlertDialogAction
+            size="sm"
             variant="destructive"
             onClick={() => {
               if (board) onConfirm(board.id);

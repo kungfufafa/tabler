@@ -38,7 +38,7 @@ function SslFileButton({
         size="sm"
         title={path ? path : title}
         aria-label={path ? `${label} ${baseName(path)}` : label}
-        className={cn("max-w-40", path && "rounded-r-none font-mono text-[11px]")}
+        className={cn("max-w-40", path && "rounded-r-none font-mono text-xs")}
         onClick={async () => {
           const p = await pickFile(title);
           if (p) set(p);

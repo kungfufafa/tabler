@@ -29,7 +29,9 @@ import { base64Head, hexDump } from "@/features/inspector/hex";
 import { parseFieldText } from "@/features/inspector/fields";
 import { actions, type ActionId } from "@/features/palette/actions";
 import type { Value } from "@/lib/ipc";
-import { formatCombo } from "@/lib/keys/combo";
+import { FormError } from "@/components/FormError";
+import { KbdHint } from "@/components/KbdHint";
+import { QuietStatus } from "@/components/QuietLoading";
 import { KEYMAP } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { cellDisplay, decodeBytesText, editText, formatBytes } from "@/lib/values";
@@ -118,14 +120,14 @@ function TreeNode({ name, node, depth }: { name: string | null; node: JsonNode; 
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="hover:bg-accent flex items-center rounded leading-5"
+        className="hover:bg-row-hover focus-visible:ring-ring flex items-center rounded leading-5 outline-none focus-visible:ring-1 focus-visible:ring-inset"
       >
         {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
         {label}
         <span className="text-muted-foreground">{nodeSummary(node)}</span>
       </button>
       {open && (
-        <div role="group" className="border-border/60 ml-[7px] border-l pl-1">
+        <div role="group" className="border-border ml-[7px] border-l pl-1">
           {children.map((c) => (
             <TreeNode key={c.key} name={c.name} node={c.node} depth={depth + 1} />
           ))}
@@ -198,7 +200,7 @@ function BytesBody({
       {view === "hex" ? (
         <pre
           data-testid="quick-look-hex"
-          className="border-border bg-surface selectable min-h-0 flex-1 overflow-auto rounded-md border p-2 font-mono text-[11px] leading-4 whitespace-pre"
+          className="border-border bg-surface selectable min-h-0 flex-1 overflow-auto rounded-md border p-2 font-mono text-xs whitespace-pre"
         >
           {dump}
           {len > HEX_LIMIT && `\n… first ${formatBytes(HEX_LIMIT)} of ${formatBytes(len)}`}
@@ -213,7 +215,7 @@ function BytesBody({
             language={detectLanguage("text", "bytea", text)}
           />
           {(truncated || len > TEXT_LIMIT) && (
-            <p className="text-muted-foreground text-[11px]">
+            <p className="text-muted-foreground text-xs">
               {truncated
                 ? "Only a preview is loaded: the text stops where it does."
                 : `The first ${formatBytes(TEXT_LIMIT)} of ${formatBytes(len)} as text.`}
@@ -253,17 +255,19 @@ function ReferencedBody({
   }, []);
   if (state.status === "loading")
     return (
-      <div className="text-muted-foreground flex flex-1 items-center justify-center gap-2 text-xs">
-        <span className="sr-only">Loading the referenced row…</span>
+      <div className="flex-1">
+        <QuietStatus>Loading the referenced row</QuietStatus>
       </div>
     );
   if (state.status === "error")
-    return <div className="text-error p-3 text-xs">Could not load it: {state.error}</div>;
+    return (
+      <div className="text-error p-3 text-xs">Could not load the referenced row: {state.error}</div>
+    );
   const { table, columns, rows } = state.data;
   const first = rows[0];
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <div className="text-muted-foreground flex items-center gap-2 text-[11px]">
+      <div className="text-muted-foreground flex items-center gap-2 text-xs">
         <span className="text-foreground font-mono">{table}</span>
         <span>
           {rows.length === 0
@@ -291,7 +295,7 @@ function ReferencedBody({
               <div
                 key={`${i}\u0000${c.name}`}
                 role="listitem"
-                className="border-border/60 grid grid-cols-[minmax(8rem,30%)_1fr] gap-3 px-2.5 py-1 text-xs"
+                className="border-border grid grid-cols-[minmax(8rem,30%)_1fr] gap-3 px-2.5 py-1 text-xs"
               >
                 <span className="text-muted-foreground truncate" title={c.dataType}>
                   {c.name}
@@ -422,7 +426,7 @@ function FloatingPanel({
     >
       <div
         data-testid="quick-look-handle"
-        className="-mx-2.5 -mt-2.5 flex cursor-move items-center gap-2 border-b px-2.5 py-1.5 text-sm select-none"
+        className="-mx-2.5 -mt-2.5 flex h-8 shrink-0 cursor-move items-center gap-2 border-b px-2.5 text-sm font-medium select-none"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
@@ -620,7 +624,7 @@ export function QuickLook({
   const titleText = (
     <span className="flex min-w-0 items-center gap-2">
       <span className="truncate font-mono">{column.name}</span>
-      <span className="text-muted-foreground shrink-0 font-mono text-[11px] font-normal">
+      <span className="text-muted-foreground shrink-0 font-mono text-xs font-normal">
         {column.dataType}
         {rowNumber !== undefined && ` · row ${rowNumber}`}
       </span>
@@ -667,7 +671,7 @@ export function QuickLook({
           onChange={toggleSort}
           title="List the keys of every object in order (display only: nothing is staged until you save)"
         >
-          Sort keys
+          Sort Keys
         </Toggle>
       )}
       {view === "value" && geometry && !raw && (
@@ -695,7 +699,7 @@ export function QuickLook({
       )}
       <span className="flex-1" />
       {view === "value" && shown.t === "bytes" && (
-        <span className="text-muted-foreground text-[11px]">
+        <span className="text-muted-foreground text-xs tabular-nums">
           {formatBytes(shown.v.len)}
           {truncated && " (preview)"}
         </span>
@@ -708,7 +712,7 @@ export function QuickLook({
           onClick={() => void loadWhole()}
         >
           <Download />
-          Load full value
+          Load Full Value
         </Button>
       )}
       {showsText && !bytes && (
@@ -720,7 +724,7 @@ export function QuickLook({
         <Toggle
           pressed={raw}
           onChange={toggleRaw}
-          title="Show the stored value as it is: no formatting, colours, tree or map"
+          title="Show the stored value as it is: no formatting, colors, tree or map"
         >
           Show raw
         </Toggle>
@@ -731,7 +735,7 @@ export function QuickLook({
           size="xs"
           title="Detach: a floating panel that stays open and follows the selected cell"
           onClick={onDetach}
-          className="text-muted-foreground hover:text-foreground h-6 text-[11px]"
+          className="text-muted-foreground hover:text-foreground"
         >
           <PictureInPicture2 /> Detach
         </Button>
@@ -777,7 +781,7 @@ export function QuickLook({
   const status = (
     <p
       role={error ? "alert" : undefined}
-      className={cn("min-w-0 truncate text-[11px]", error ? "text-error" : "text-muted-foreground")}
+      className={cn("min-w-0 truncate text-xs", error ? "text-error" : "text-muted-foreground")}
     >
       {error ??
         (isNull && view === "value" && !(bytes && !editable)
@@ -792,13 +796,13 @@ export function QuickLook({
   const buttons = (
     <div className="flex shrink-0 gap-1.5">
       {!detached && (
-        <Button variant="ghost" size="sm" onClick={onClose}>
+        <Button variant="outline" size="sm" onClick={onClose}>
           {editable ? "Cancel" : "Close"}
         </Button>
       )}
       {detached && dirty && (
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
           title="Drop the edit; the panel follows the focused cell again"
           onClick={() => {
@@ -812,16 +816,12 @@ export function QuickLook({
       {editable && (
         <Button size="sm" onClick={save} disabled={!dirty}>
           Save
-          <kbd className="ml-1 text-[10px] opacity-70">{formatCombo("Mod+Enter")}</kbd>
+          <KbdHint combo="Mod+Enter" />
         </Button>
       )}
     </div>
   );
-  const fullError = fullState?.status === "error" && (
-    <p role="alert" className="text-error text-[11px]">
-      {fullState.error}
-    </p>
-  );
+  const fullError = fullState?.status === "error" && <FormError>{fullState.error}</FormError>;
 
   if (detached)
     return (
@@ -849,14 +849,14 @@ export function QuickLook({
         // Its editor keeps the SQL editor's keyboard scope: the shield above takes those keys.
         data-shortcut-scope="editor"
         aria-label={`Quick Look: ${column.name}`}
-        className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col gap-2.5 sm:max-w-[min(56rem,calc(100%-2rem))]"
+        className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(56rem,calc(100%-2rem))]"
         onCloseAutoFocus={(e) => e.preventDefault()}
         onPointerDown={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}
         onContextMenu={(e) => e.stopPropagation()}
         onKeyDown={onKeyDown}
       >
-        <DialogHeader className="gap-1">
+        <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-sm">{titleText}</DialogTitle>
           <DialogDescription className="sr-only">
             The cell value in a larger editor. Save with Command-Return, close with Escape.

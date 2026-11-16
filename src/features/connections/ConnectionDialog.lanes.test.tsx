@@ -116,7 +116,7 @@ describe("the picker", () => {
     expect(screen.getByRole("radio", { name: "MongoDB" })).toHaveAttribute("aria-checked", "true");
     await user.keyboard("{Enter}");
     expect(
-      await screen.findByRole("dialog", { name: "New MongoDB connection" }),
+      await screen.findByRole("dialog", { name: "New MongoDB Connection" }),
     ).toBeInTheDocument();
   });
 });
@@ -130,9 +130,9 @@ describe("a lane's form", () => {
     renderDialog();
     await user.dblClick(await screen.findByRole("radio", { name: "MongoDB" }));
     // Still the picker: the lane has not loaded.
-    expect(screen.getByRole("dialog", { name: "New connection" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "New Connection" })).toBeInTheDocument();
     await act(async () => lane.resolve());
-    const form = await screen.findByRole("dialog", { name: "New MongoDB connection" });
+    const form = await screen.findByRole("dialog", { name: "New MongoDB Connection" });
     expect(within(form).getByTestId("fake-fields")).toHaveTextContent("Options of mongodb");
     // The lane's defaults and its words for the shared rows.
     expect(within(form).getByLabelText("Port")).toHaveValue("27017");
@@ -146,7 +146,7 @@ describe("a lane's form", () => {
     const user = userEvent.setup();
     const { onOpenChange } = renderDialog();
     await user.dblClick(await screen.findByRole("radio", { name: "MongoDB" }));
-    const form = await screen.findByRole("dialog", { name: "New MongoDB connection" });
+    const form = await screen.findByRole("dialog", { name: "New MongoDB Connection" });
     await user.type(within(form).getByLabelText("Name"), "Docs");
     await user.type(within(form).getByLabelText("User"), "reader");
     await user.type(within(form).getByLabelText("Auth source"), "audit");
@@ -170,7 +170,7 @@ describe("a lane's form", () => {
     const user = userEvent.setup();
     renderDialog();
     await user.dblClick(await screen.findByRole("radio", { name: "MongoDB" }));
-    const form = await screen.findByRole("dialog", { name: "New MongoDB connection" });
+    const form = await screen.findByRole("dialog", { name: "New MongoDB Connection" });
     await user.type(within(form).getByLabelText("Name"), "Docs");
     await user.clear(within(form).getByLabelText("Host"));
     await user.click(within(form).getByRole("button", { name: "Save" }));
@@ -184,7 +184,7 @@ describe("a lane's form", () => {
     registerLaneOverride("mongodb", lane.load);
     renderDialog(mongo);
     const form = await screen.findByRole("dialog", { name: "Edit Docs" });
-    expect(within(form).getByRole("status")).toHaveTextContent("Loading the MongoDB form…");
+    expect(within(form).getByRole("status")).toHaveTextContent("Loading the MongoDB form");
     await act(async () => lane.resolve());
     expect(await within(form).findByLabelText("Auth source")).toHaveValue("audit");
     expect(within(form).getByLabelText("Host")).toHaveValue("db.example");
@@ -240,7 +240,7 @@ describe("a lane's form", () => {
     cleanup();
     renderDialog();
     await user.dblClick(await screen.findByRole("radio", { name: "DuckDB" }));
-    const duck = await screen.findByRole("dialog", { name: "New DuckDB connection" });
+    const duck = await screen.findByRole("dialog", { name: "New DuckDB Connection" });
     await user.click(within(duck).getByRole("button", { name: /New…/ }));
     expect(newFile).toHaveBeenCalledOnce();
     expect(within(duck).getByLabelText("Database file")).toHaveValue("/data/new.duckdb");
@@ -256,7 +256,7 @@ describe("a lane's form", () => {
     const sslOf = async (label: string) => {
       renderDialog();
       await user.dblClick(await screen.findByRole("radio", { name: label }));
-      const form = await screen.findByRole("dialog", { name: `New ${label} connection` });
+      const form = await screen.findByRole("dialog", { name: `New ${label} Connection` });
       const ssl = within(form).getByLabelText("SSL mode").textContent;
       cleanup();
       return ssl;

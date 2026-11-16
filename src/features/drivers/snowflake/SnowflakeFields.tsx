@@ -97,7 +97,7 @@ export function SnowflakeFields({ form, hasStoredPassword }: KindFieldsProps) {
         : fallback;
 
   const button = (label: string, loading: boolean, onClick: () => void) => (
-    <Button type="button" variant="outline" size="sm" disabled={loading} onClick={onClick}>
+    <Button type="button" variant="outline" disabled={loading} onClick={onClick}>
       {label}
     </Button>
   );
@@ -108,7 +108,7 @@ export function SnowflakeFields({ form, hasStoredPassword }: KindFieldsProps) {
         id={`${uid}-${key}`}
         {...register(`driverParams.${key}` as Path<ConnectionFormValues>)}
         placeholder={placeholder}
-        className="font-mono"
+        className="font-mono text-sm"
         autoComplete="off"
         spellCheck={false}
       />
@@ -139,11 +139,15 @@ export function SnowflakeFields({ form, hasStoredPassword }: KindFieldsProps) {
             {...register(field)}
             list={`${uid}-${call}-list`}
             placeholder={placeholder}
-            className="font-mono"
+            className="font-mono text-sm"
             autoComplete="off"
             spellCheck={false}
           />
-          {button(`List ${noun}s`, l?.state === "loading", () => void list(call))}
+          {button(
+            `List ${noun.charAt(0).toUpperCase()}${noun.slice(1)}s`,
+            l?.state === "loading",
+            () => void list(call),
+          )}
         </div>
         <datalist id={`${uid}-${call}-list`} data-testid={`snowflake-${call}`}>
           {l?.state === "done" && l.items.map((n) => <option key={n} value={n} />)}
@@ -209,7 +213,7 @@ export function SnowflakeFields({ form, hasStoredPassword }: KindFieldsProps) {
                 id={`${uid}-privateKeyPath`}
                 {...register("driverParams.privateKeyPath" as Path<ConnectionFormValues>)}
                 placeholder="/path/to/rsa_key.p8"
-                className="font-mono"
+                className="font-mono text-sm"
                 autoComplete="off"
                 spellCheck={false}
               />
@@ -309,7 +313,7 @@ export function SnowflakeFields({ form, hasStoredPassword }: KindFieldsProps) {
           id={`${uid}-sessionParameters`}
           {...register("driverParams.sessionParameters" as Path<ConnectionFormValues>)}
           placeholder={"QUERY_TAG = tabler\nTIMEZONE = UTC"}
-          className="min-h-16 font-mono text-xs"
+          className="min-h-16 font-mono text-xs md:text-xs"
           spellCheck={false}
         />
       </Row>

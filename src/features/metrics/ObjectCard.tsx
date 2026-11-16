@@ -1,4 +1,5 @@
 import { AlertCircle } from "lucide-react";
+import { QuietStatus } from "@/components/QuietLoading";
 import { useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import {
   ContextMenu,
@@ -87,8 +88,8 @@ export function ObjectCard({
           role="alert"
           className="text-error flex min-h-0 flex-1 items-start gap-1.5 overflow-auto p-3 text-xs"
         >
-          <AlertCircle className="mt-px size-3.5 shrink-0" />
-          <span className="break-words whitespace-pre-wrap">{error}</span>
+          <AlertCircle aria-hidden className="mt-px size-3.5 shrink-0" />
+          <span className="selectable break-words whitespace-pre-wrap">{error}</span>
         </div>
       </div>
     );
@@ -155,7 +156,7 @@ export function ObjectCard({
             "bg-surface border-border absolute flex flex-col rounded-lg border shadow-xs outline-none",
             editing && "cursor-grab touch-none select-none",
             dragging && "z-20 cursor-grabbing shadow-lg",
-            selected && "ring-primary ring-2",
+            selected && "ring-brand ring-2",
             wireTarget && "ring-success ring-2",
           )}
         >
@@ -167,9 +168,7 @@ export function ObjectCard({
           >
             {body}
           </div>
-          {(running || waiting) && info.data && (
-            <span className="sr-only" role="status" aria-label="Running"></span>
-          )}
+          {(running || waiting) && info.data && <QuietStatus>Running</QuietStatus>}
           {editing && info.source && (
             <span
               role="button"

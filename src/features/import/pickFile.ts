@@ -9,9 +9,9 @@ export const MOCK_IMPORT_FILES: Record<ImportKind, string> = {
 };
 
 const TITLES: Record<ImportKind, string> = {
-  csv: "Import From CSV",
-  json: "Import From JSON",
-  sql: "Import From SQL Dump",
+  csv: "Import from CSV",
+  json: "Import from JSON",
+  sql: "Import from SQL Dump",
 };
 
 const FILTERS: Record<ImportKind, Array<{ name: string; extensions: string[] }>> = {

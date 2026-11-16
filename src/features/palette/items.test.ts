@@ -62,7 +62,7 @@ describe("keymapActionItems", () => {
     expect(items.map((i) => i.key)).toEqual(["action:tab.next", "action:ui.toggle-sidebar"]);
     // The first binding is the one shown.
     expect(items[0]!.combo).toBe("Mod+]");
-    expect(items[1]).toMatchObject({ label: "Toggle sidebar", combo: "Mod+0" });
+    expect(items[1]).toMatchObject({ label: "Toggle Sidebar", combo: "Mod+0" });
     items[1]!.run();
     expect(run).toHaveBeenCalledWith("ui.toggle-sidebar");
   });
@@ -106,7 +106,7 @@ describe("buildSections (⌘K, ⇧⌘K)", () => {
     tables: [item("t:users", "users", "tables"), item("t:orders", "orders", "tables")],
     tabs: [item("tab:1", "Query 1", "tabs")],
     connections: [] as PaletteItem[],
-    actions: [item("a:sidebar", "Toggle sidebar"), item("a:close", "Close tab")],
+    actions: [item("a:sidebar", "Toggle Sidebar"), item("a:close", "Close Tab")],
   };
 
   it("keeps the fixed group order and drops empty groups", () => {
@@ -221,9 +221,9 @@ describe("Open Anything (buildOpenAnything)", () => {
     databases: [{ ...item("db:postgres", "postgres", "databases"), noRecent: true }],
     connections: [item("conn:p1", "Local PG", "connections")],
     actions: [
-      item("action:dup", "Duplicate row"),
-      item("action:fk", "Open referenced row"),
-      { ...item("action:inspector", "Toggle row detail panel"), keywords: ["ui toggle inspector"] },
+      item("action:dup", "Duplicate Row"),
+      item("action:fk", "Open Referenced Row"),
+      { ...item("action:inspector", "Toggle Row Detail Panel"), keywords: ["ui toggle inspector"] },
       { ...item("cmd:theme.dark", "Theme: Dark"), keywords: ["dark mode"] },
       item("action:export", "Export…"),
     ],
@@ -279,7 +279,7 @@ describe("Open Anything (buildOpenAnything)", () => {
       "Export…",
     ]);
     // Commands never show up through loose subsequences, only by prefix, word start or substring.
-    expect(labels("po")).not.toContain("Duplicate row");
+    expect(labels("po")).not.toContain("Duplicate Row");
     expect(labels("oi")).toEqual(["order_items"]);
     expect(labels("ord")).toEqual(["order_items", "orders", "orders"]);
     // Equal labels: the table before its open tab.
@@ -325,19 +325,19 @@ describe("Open Anything (buildOpenAnything)", () => {
     ]);
     expect(labels(">", { mru: ["cmd:theme.dark"] })).toEqual([
       "Theme: Dark",
-      "Duplicate row",
+      "Duplicate Row",
       "Export…",
-      "Open referenced row",
-      "Toggle row detail panel",
+      "Open Referenced Row",
+      "Toggle Row Detail Panel",
     ]);
-    expect(labels("> dup")).toEqual(["Duplicate row"]);
+    expect(labels("> dup")).toEqual(["Duplicate Row"]);
     expect(labels(">ro")).toEqual([
-      "Duplicate row",
-      "Open referenced row",
-      "Toggle row detail panel",
+      "Duplicate Row",
+      "Open Referenced Row",
+      "Toggle Row Detail Panel",
     ]);
     // Keywords that start words count, below label hits.
-    expect(labels("> inspector")).toEqual(["Toggle row detail panel"]);
+    expect(labels("> inspector")).toEqual(["Toggle Row Detail Panel"]);
     expect(labels("> dark mode")).toEqual(["Theme: Dark"]);
     expect(labels(">users")).toEqual([]);
   });
@@ -349,7 +349,7 @@ describe("Open Anything (buildOpenAnything)", () => {
         { ...item("cmd:backup", "Backup Database…"), combo: "Mod+Shift+B" },
         item("cmd:restore", "Restore Database…"),
         { ...item("cmd:export", "Export…"), keywords: ["backup copy data"] },
-        item("action:fk", "Open referenced row"),
+        item("action:fk", "Open Referenced Row"),
       ],
     };
     const sectionsFor = (query: string, g: typeof features = features) =>
@@ -383,7 +383,7 @@ describe("Open Anything (buildOpenAnything)", () => {
       expect(sectionsFor("r")).toEqual([["objects", undefined, ["users"]]]);
       expect(sectionsFor(" r ")).toEqual([["objects", undefined, ["users"]]]);
       expect(sectionsFor("re")).toEqual([
-        ["commands", "Commands", ["Restore Database…", "Open referenced row"]],
+        ["commands", "Commands", ["Restore Database…", "Open Referenced Row"]],
       ]);
       expect(sectionsFor("")).toEqual([["objects", undefined, ["backup_log", "users"]]]);
     });

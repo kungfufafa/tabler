@@ -25,7 +25,7 @@ import { useCurrentSchema, useSchemas } from "./useSchemaTree";
 import { useSidebarSettings } from "./useSidebarSettings";
 
 const iconButton =
-  "text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:ring-sidebar-ring flex h-6 shrink-0 items-center justify-center gap-1 rounded-md px-1 outline-none focus-visible:ring-1 focus-visible:ring-inset";
+  "text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:ring-sidebar-ring flex h-6 shrink-0 items-center justify-center gap-1 rounded-md px-1 transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset";
 
 /**
  * The schema switcher at the bottom (TablePlus): PostgreSQL schemas (plus the system schemas when
@@ -64,7 +64,7 @@ export function SchemaPicker({ connection }: { connection: OpenConnection }) {
         className={cn(iconButton, "max-w-40 min-w-0 px-2 text-xs")}
       >
         <span className="truncate">{current ?? label}</span>
-        <ChevronsUpDown aria-hidden className="size-3 shrink-0" />
+        <ChevronsUpDown aria-hidden className="size-3.5 shrink-0" />
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="end" className="max-h-80 min-w-44">
         <DropdownMenuRadioGroup
@@ -75,10 +75,7 @@ export function SchemaPicker({ connection }: { connection: OpenConnection }) {
             <DropdownMenuRadioItem
               key={s.name}
               value={s.name}
-              className={cn(
-                "text-xs",
-                PG_SYSTEM_SCHEMAS.includes(s.name) && "text-muted-foreground",
-              )}
+              className={cn(PG_SYSTEM_SCHEMAS.includes(s.name) && "text-muted-foreground")}
             >
               {s.name}
             </DropdownMenuRadioItem>
@@ -90,7 +87,6 @@ export function SchemaPicker({ connection }: { connection: OpenConnection }) {
             <DropdownMenuCheckboxItem
               checked={showSystemPref}
               onCheckedChange={(v) => setSidebarOption("showSystemSchemas", v === true)}
-              className="text-xs"
             >
               Show System Schemas
             </DropdownMenuCheckboxItem>
@@ -145,18 +141,16 @@ export function SidebarFooter({ connection }: { connection: OpenConnection }) {
     <div className="border-sidebar-border bg-sidebar flex h-8 shrink-0 items-center gap-1 border-t px-2">
       <DropdownMenu>
         <DropdownMenuTrigger className={cn(iconButton, "w-6")} aria-label="Sidebar options">
-          <Settings2 aria-hidden className="size-4" />
+          <Settings2 aria-hidden className="size-3.5" />
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="start" className="w-52">
-          <DropdownMenuLabel className="text-muted-foreground text-[11px]">
-            Sidebar
-          </DropdownMenuLabel>
+          <DropdownMenuLabel>Sidebar</DropdownMenuLabel>
           <DropdownMenuEntries entries={settingItems} />
         </DropdownMenuContent>
       </DropdownMenu>
       <DropdownMenu>
         <DropdownMenuTrigger className={cn(iconButton, "w-6")} aria-label="New item">
-          <Plus aria-hidden className="size-4" />
+          <Plus aria-hidden className="size-3.5" />
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="start" className="w-56">
           <DropdownMenuEntries entries={plus} />

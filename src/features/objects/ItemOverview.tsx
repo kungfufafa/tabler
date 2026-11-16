@@ -93,9 +93,9 @@ function CommentCell({
           setDraft(item.comment ?? "");
         }}
         onDoubleClick={(e) => e.stopPropagation()}
-        className="hover:bg-surface-2 focus-visible:ring-ring/50 block w-full truncate rounded-sm px-1 text-left outline-none focus-visible:ring-1"
+        className="hover:bg-accent focus-visible:ring-ring block w-full truncate rounded-sm px-1 text-left transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset"
       >
-        {item.comment || <span className="text-muted-foreground/50 italic">—</span>}
+        {item.comment || <span className="text-null italic">—</span>}
       </button>
     );
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -123,7 +123,7 @@ function CommentCell({
           if (!done.current) void commit();
         }}
         onDoubleClick={(e) => e.stopPropagation()}
-        className="h-6 rounded-sm px-1 text-xs md:text-xs"
+        className="h-6 rounded-md px-1 text-xs md:text-xs"
       />
     </div>
   );
@@ -195,7 +195,7 @@ export function ItemOverviewView({
     layout === "dialog" ? (
       <DialogTitle className="text-sm">Item Overview</DialogTitle>
     ) : (
-      <h2 className="text-sm font-semibold">Item Overview</h2>
+      <h2 className="text-sm font-medium">Item Overview</h2>
     );
   const summary = (
     <>
@@ -219,10 +219,10 @@ export function ItemOverviewView({
         </div>
         <Input
           aria-label="Filter items"
-          placeholder="Filter…"
+          placeholder="Filter"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          className="h-7 w-48 text-xs md:text-xs"
+          className="h-7 w-48 rounded-md text-xs md:text-xs"
         />
         <Button
           variant="ghost"
@@ -244,7 +244,7 @@ export function ItemOverviewView({
         ) : (
           <table className="w-full border-collapse text-xs">
             <thead>
-              <tr className="text-muted-foreground [&>th]:bg-surface-2 h-7 text-left text-[11px] [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:shadow-[inset_0_-1px_0_var(--color-border)]">
+              <tr className="text-muted-foreground [&>th]:bg-surface-2 h-7 text-left text-xs [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:shadow-[inset_0_-1px_0_var(--color-border)]">
                 {columns.map((c) => {
                   const active = sort.column === c.id;
                   return (
@@ -260,7 +260,7 @@ export function ItemOverviewView({
                         type="button"
                         onClick={() => setSort(nextSort(sort, c))}
                         className={cn(
-                          "hover:text-foreground flex w-full items-center gap-1 px-2 py-1 font-mono",
+                          "hover:text-foreground focus-visible:ring-ring flex w-full items-center gap-1 px-2 py-1 font-mono transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset",
                           c.numeric && "justify-end",
                           active && "text-foreground",
                         )}
@@ -268,9 +268,9 @@ export function ItemOverviewView({
                         {c.label}
                         {active &&
                           (sort.desc ? (
-                            <ArrowDown className="size-3" />
+                            <ArrowDown aria-hidden className="size-3" />
                           ) : (
-                            <ArrowUp className="size-3" />
+                            <ArrowUp aria-hidden className="size-3" />
                           ))}
                       </button>
                     </th>
@@ -283,7 +283,7 @@ export function ItemOverviewView({
                 <tr
                   key={`${item.schema ?? ""}.${item.name}`}
                   onDoubleClick={() => open(item)}
-                  className="border-gridline h-7 border-b hover:bg-black/[0.035] dark:hover:bg-white/[0.05]"
+                  className="border-gridline hover:bg-row-hover h-7 border-b"
                 >
                   {columns.map((c) => (
                     <td
@@ -323,9 +323,9 @@ export function ItemOverviewView({
                 <tr>
                   <td
                     colSpan={columns.length}
-                    className="text-muted-foreground p-3 text-center text-[11px] italic"
+                    className="text-muted-foreground py-6 text-center text-xs"
                   >
-                    {filter ? "No items match" : "This schema has no tables or views"}
+                    {filter ? "No items match the filter" : "No tables or views"}
                   </td>
                 </tr>
               )}
@@ -333,7 +333,7 @@ export function ItemOverviewView({
           </table>
         )}
       </div>
-      <p className="text-muted-foreground text-[11px]">
+      <p className="text-muted-foreground text-xs">
         Estimates come from the server's statistics. Double-click a row to open it.
       </p>
     </div>
@@ -350,7 +350,7 @@ export function ItemOverviewDialog({
 }) {
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex h-[min(80dvh,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(72rem,calc(100%-2rem))]">
+      <DialogContent className="flex h-[min(80dvh,calc(100dvh-4rem))] flex-col sm:max-w-[min(72rem,calc(100%-2rem))]">
         <ItemOverviewView
           connectionId={request.connectionId}
           dialect={request.dialect}

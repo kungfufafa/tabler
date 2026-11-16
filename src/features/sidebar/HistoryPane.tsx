@@ -15,6 +15,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
+import { SectionLabel } from "@/components/SectionLabel";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -233,7 +234,7 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
         toast.success("History cleared");
       },
       (e: unknown) =>
-        toast.error("Could not clear history", { description: toIpcError(e).message }),
+        toast.error("Could not clear the history", { description: toIpcError(e).message }),
     );
   };
   const clearOlder = () => {
@@ -252,7 +253,7 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
         );
       },
       (e: unknown) =>
-        toast.error("Could not clear history", { description: toIpcError(e).message }),
+        toast.error("Could not clear the history", { description: toIpcError(e).message }),
     );
   };
 
@@ -375,7 +376,7 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
       />
     );
   } else if (history.isError) {
-    body = <EmptyState title="Could not load history" description={history.error.message} />;
+    body = <EmptyState title="Could not load the history" description={history.error.message} />;
   } else if (entries.length === 0 && settled && !history.isPending) {
     body = (
       <EmptyState
@@ -393,12 +394,13 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
   } else {
     body = groups.map((g) => (
       <div key={g.key} role="group" aria-label={g.label}>
-        <div
+        <SectionLabel
+          as="div"
           aria-hidden
-          className="bg-sidebar text-muted-foreground sticky top-0 z-[1] flex h-5.5 items-center px-2.5 text-[11px] font-semibold"
+          className="bg-sidebar sticky top-0 z-10 flex h-6 items-center px-2.5"
         >
           {g.label}
-        </div>
+        </SectionLabel>
         {g.entries.map((e) => {
           const isSelected = selected.has(e.id);
           const many = isSelected && selected.size > 1 ? selected.size : 1;
@@ -426,8 +428,11 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
                   }}
                   onKeyDown={(ev) => onRowKeyDown(ev, e)}
                   className={cn(
-                    "hover:bg-sidebar-accent/60 focus-visible:bg-sidebar-accent flex h-5.5 w-full items-center gap-1.5 pr-2.5 pl-3 text-left outline-none",
-                    isSelected && selected.size > 1 && "bg-brand/15 hover:bg-brand/20",
+                    "focus-visible:ring-sidebar-ring flex h-6 w-full items-center gap-1.5 pr-2.5 pl-3 text-left outline-none focus-visible:ring-1 focus-visible:ring-inset",
+                    isSelected
+                      ? // macOS: grey while the list is not focused, brand-soft while it is.
+                        "bg-accent text-accent-foreground group-focus-within/history:bg-sidebar-accent group-focus-within/history:text-sidebar-accent-foreground"
+                      : "hover:bg-row-hover",
                   )}
                 >
                   <span
@@ -438,11 +443,11 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
                       e.success ? "bg-success" : "bg-error",
                     )}
                   />
-                  <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs">
                     {firstLine(e.sql, 200)}
                   </span>
                   {isMcpEntry(e) && <McpBadge />}
-                  <span className="text-muted-foreground/80 shrink-0 text-[10px] tabular-nums">
+                  <span className="text-muted-foreground shrink-0 text-[10px] tabular-nums">
                     {entryTime(e.startedAt, now)}
                   </span>
                 </button>
@@ -506,7 +511,7 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
           value={search}
           onChange={setSearch}
           onArrowDown={() => focusRow(0)}
-          placeholder={options.regex ? "Search history (regex)…" : "Search history…"}
+          placeholder={options.regex ? "Search history (regex)" : "Search history"}
           label="Search history"
           kbdHint={false}
         />
@@ -527,19 +532,17 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
                   : "Search options, retention, clear"
               }
               className={cn(
-                "focus-visible:ring-ring/50 data-[state=open]:bg-sidebar-accent flex size-6.5 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2",
+                "focus-visible:ring-sidebar-ring flex size-6 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset",
                 filtering
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                  : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
+                  ? "bg-brand-soft text-brand"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground",
               )}
             >
-              <ListFilter className="size-3.5" />
+              <ListFilter aria-hidden className="size-3.5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-60 text-xs">
-            <DropdownMenuLabel className="text-muted-foreground text-[11px] font-normal">
-              Search
-            </DropdownMenuLabel>
+          <DropdownMenuContent align="end" className="w-60">
+            <DropdownMenuLabel>Search</DropdownMenuLabel>
             <DropdownMenuCheckboxItem
               checked={options.matchCase}
               onCheckedChange={(v) => setOptions({ matchCase: v === true })}
@@ -591,22 +594,22 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
           title={
             allConnections
               ? "Showing every connection's history"
-              : `Showing ${connection.info.name} only — click for all connections`
+              : `Showing ${connection.info.name} only. Click to show every connection`
           }
           onClick={() => setSidebarOption("historyAllConnections", !allConnections)}
           className={cn(
-            "focus-visible:ring-ring/50 flex size-6.5 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2",
+            "focus-visible:ring-sidebar-ring flex size-6 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset",
             allConnections
-              ? "bg-sidebar-accent text-sidebar-accent-foreground"
-              : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
+              ? "bg-brand-soft text-brand"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
         >
-          <Layers className="size-3.5" />
+          <Layers aria-hidden className="size-3.5" />
         </button>
       </div>
       <div
         ref={listRef}
-        className="relative min-h-0 flex-1 overflow-auto pb-1"
+        className="group/history relative min-h-0 flex-1 overflow-auto pb-1"
         aria-label="Query history"
         aria-multiselectable
         role="region"
@@ -614,7 +617,7 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
         {body}
       </div>
       <AlertDialog open={confirmClear} onOpenChange={setConfirmClear}>
-        <AlertDialogContent size="sm" className="data-[size=sm]:sm:max-w-md">
+        <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-sm">Clear all history?</AlertDialogTitle>
             <AlertDialogDescription className="text-xs">
@@ -630,9 +633,9 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
         </AlertDialogContent>
       </AlertDialog>
       <AlertDialog open={olderThan !== null} onOpenChange={(o) => !o && setOlderThan(null)}>
-        <AlertDialogContent size="sm" className="data-[size=sm]:sm:max-w-md">
+        <AlertDialogContent className="data-[size=default]:sm:max-w-[34rem]">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-sm">Clear history older than…</AlertDialogTitle>
+            <AlertDialogTitle className="text-sm">Clear older history?</AlertDialogTitle>
             <AlertDialogDescription className="text-xs">
               {`Statements of ${scope} run before this day are deleted. This cannot be undone.`}
             </AlertDialogDescription>
@@ -643,7 +646,7 @@ export function HistoryPane({ connection }: { connection: OpenConnection }) {
             value={olderThan ?? ""}
             max={dayKey(new Date())}
             onChange={(ev) => setOlderThan(ev.target.value)}
-            className="border-input bg-background focus-visible:ring-ring/50 h-7 rounded-md border px-2 text-xs outline-none focus-visible:ring-2"
+            className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-7 rounded-md border px-2 text-xs tabular-nums transition-colors outline-none focus-visible:ring-2"
           />
           <AlertDialogFooter>
             <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>

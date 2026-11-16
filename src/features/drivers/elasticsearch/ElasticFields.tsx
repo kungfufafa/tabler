@@ -19,7 +19,7 @@ import { AUTH_METHODS, AWS_CREDENTIALS, AWS_SERVICES, elasticFormOf } from "./pa
 /** What the Password field holds for each sign-in. */
 const SECRET_HINT: Record<string, string> = {
   basic: "User and Password sign in (nothing is sent while both are empty)",
-  apiKey: "Password holds the API key (encoded, or the key of the API key id)",
+  apiKey: "Password holds the API key (encoded, or the key of the API key ID)",
   bearer: "Password holds the token (a service-account token, an OAuth or JWT realm's)",
   awsSigv4: "",
   none: "Nothing is sent: a cluster without security",
@@ -81,7 +81,7 @@ export function ElasticFields({ form }: KindFieldsProps) {
         id={`${uid}-${key}`}
         {...register(`driverParams.${key}` as Path<ConnectionFormValues>)}
         placeholder={placeholder}
-        className="font-mono"
+        className="font-mono text-sm"
         autoComplete="off"
         spellCheck={false}
       />
@@ -100,7 +100,7 @@ export function ElasticFields({ form }: KindFieldsProps) {
           id={`${uid}-urls`}
           {...register("driverParams.urls")}
           placeholder={"https://es1.example.com:9200\nhttps://es2.example.com:9200"}
-          className="min-h-14 font-mono text-xs"
+          className="min-h-14 font-mono text-xs md:text-xs"
           autoComplete="off"
           spellCheck={false}
         />
@@ -123,7 +123,7 @@ export function ElasticFields({ form }: KindFieldsProps) {
       {params.auth === "apiKey" &&
         text(
           "apiKeyId",
-          "API key id",
+          "API key ID",
           "",
           "With an id, Password holds the key; without, the encoded key",
         )}

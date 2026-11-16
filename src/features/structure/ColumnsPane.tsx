@@ -6,6 +6,9 @@ import type { ColumnRow } from "./model";
 
 const MULTIPLE = "Multiple values";
 
+/** A stacked field label (FormField's look) wrapping its control. */
+const LABEL = "text-muted-foreground flex flex-col gap-1 text-xs font-medium";
+
 interface FieldSpec {
   field: ColumnField;
   label: string;
@@ -51,9 +54,9 @@ function TextField({
       spellCheck={false}
       autoComplete="off"
       className={cn(
-        "border-border bg-surface placeholder:text-muted-foreground focus:border-ring focus:ring-ring/30 h-6 w-full min-w-0 rounded-md border px-2 font-mono text-[11px] outline-none focus:ring-2",
+        "border-border bg-surface text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 h-6 w-full min-w-0 rounded-md border px-2 font-mono text-xs outline-none focus-visible:ring-2",
         spec.mixed && !dirty && "placeholder:italic",
-        readOnly && "opacity-70",
+        readOnly && "opacity-50",
       )}
     />
   );
@@ -78,7 +81,7 @@ function NullableField({
       onChange={(e) => {
         if (e.target.value) onCommit(e.target.value === "YES");
       }}
-      className="border-border bg-surface focus:border-ring focus:ring-ring/30 h-6 w-full min-w-0 rounded-md border px-1.5 font-mono text-[11px] outline-none focus:ring-2 disabled:opacity-70"
+      className="border-border bg-surface text-foreground focus-visible:border-ring focus-visible:ring-ring/50 h-6 w-full min-w-0 rounded-md border px-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50"
     >
       {mixed && (
         <option value="" disabled>
@@ -120,7 +123,7 @@ export function ColumnsPane({ selection }: { selection: ColumnSelection }) {
     ...text(pick),
   });
   const textField = (s: FieldSpec) => (
-    <label key={s.field} className="flex flex-col gap-1 text-[11px] font-medium">
+    <label key={s.field} className={LABEL}>
       {s.label}
       <TextField spec={s} readOnly={!canEdit} onCommit={(raw) => onEdit(s.field, raw)} />
     </label>
@@ -131,17 +134,19 @@ export function ColumnsPane({ selection }: { selection: ColumnSelection }) {
     <div className="flex min-h-0 flex-1 flex-col" data-slot="structure-columns-pane">
       <div
         role="status"
-        className="border-border text-foreground bg-brand-soft shrink-0 border-b px-3 py-1.5 text-xs font-medium"
+        className="border-border text-foreground bg-brand-soft flex h-8 shrink-0 items-center border-b px-3 text-xs font-medium"
       >
-        <span className="truncate">{title}</span>
-        {rows.length > 1 && canEdit && (
-          <span className="text-muted-foreground font-normal"> · edits apply to all of them</span>
-        )}
+        <span className="min-w-0 truncate">
+          {title}
+          {rows.length > 1 && canEdit && (
+            <span className="text-muted-foreground font-normal"> · edits apply to all of them</span>
+          )}
+        </span>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-3 py-2.5">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
         {target.length === 1 && textField(spec("name", "Name", (r) => r.name))}
         {textField(spec("dataType", "Type", (r) => r.dataType))}
-        <label className="flex flex-col gap-1 text-[11px] font-medium">
+        <label className={LABEL}>
           Nullable
           <NullableField
             mixed={nullable === MIXED}
@@ -153,7 +158,7 @@ export function ColumnsPane({ selection }: { selection: ColumnSelection }) {
         {textField(spec("defaultExpr", "Default", (r) => r.defaultExpr, "NULL"))}
         {textField(spec("comment", "Comment", (r) => r.comment))}
         {!canEdit && (
-          <p className="text-muted-foreground text-[11px]">
+          <p className="text-muted-foreground text-xs leading-4">
             {editable ? "Dropped columns cannot be edited." : "This structure is read-only."}
           </p>
         )}

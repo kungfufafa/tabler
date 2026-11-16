@@ -1,4 +1,6 @@
 import { useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { FormField } from "@/components/FormField";
+import { SectionLabel } from "@/components/SectionLabel";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { actions } from "@/features/palette/actions";
@@ -11,7 +13,13 @@ import { entryBase, entryLength, withEntryLength } from "./model";
  * (a box-shadow draws the bottom rule because collapsed borders do not move with sticky cells).
  */
 export const HEAD_ROW =
-  "text-muted-foreground h-7 text-left text-[11px] [&>th]:bg-background [&>th]:sticky [&>th]:top-8 [&>th]:z-[5] [&>th]:shadow-[inset_0_-1px_0_var(--color-border)]";
+  "text-muted-foreground h-7 text-left text-xs [&>th]:bg-background [&>th]:sticky [&>th]:top-8 [&>th]:z-[5] [&>th]:shadow-[inset_0_-1px_0_var(--color-border)]";
+
+/**
+ * A ghost `Button` on a `bg-surface-2` bar (section bars, the structure header, the bottom bar),
+ * where the primitive's `hover:bg-muted` is invisible (docs/ui-conventions.md, State tokens).
+ */
+export const BAR_BUTTON = "hover:bg-accent dark:hover:bg-accent aria-expanded:bg-accent";
 
 /**
  * Compact section bar ("COLUMNS 16 ……… + Column"), sticky inside the scrolling body. It is as
@@ -32,11 +40,9 @@ export function SectionHeader({
       data-section-header
       className="border-border bg-surface-2 sticky top-0 left-0 z-10 flex h-8 w-[100cqw] max-w-full min-w-0 items-center gap-2 border-y px-3"
     >
-      <h3 className="text-muted-foreground text-[11px] font-semibold tracking-wide uppercase">
-        {title}
-      </h3>
+      <SectionLabel>{title}</SectionLabel>
       {count !== undefined && (
-        <span className="text-muted-foreground/70 text-[11px] tabular-nums">{count}</span>
+        <span className="text-muted-foreground text-xs font-normal tabular-nums">{count}</span>
       )}
       <span className="flex-1" />
       {children}
@@ -72,7 +78,10 @@ export function IconAction({
           onClick={onClick}
           disabled={disabled}
           tabIndex={tabIndex}
-          className={cn("text-muted-foreground hover:text-foreground", className)}
+          className={cn(
+            "text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent",
+            className,
+          )}
         >
           {children}
         </Button>
@@ -205,7 +214,7 @@ export function CellInput({
       autoCorrect="off"
       autoCapitalize="off"
       className={cn(
-        "hover:border-border focus:border-ring focus:bg-surface placeholder:text-muted-foreground/50 h-6 w-full min-w-0 rounded-sm border border-transparent bg-transparent px-1.5 text-xs outline-none read-only:hover:border-transparent",
+        "hover:border-border focus:border-ring focus:bg-surface placeholder:text-muted-foreground h-6 w-full min-w-0 rounded-sm border border-transparent bg-transparent px-1.5 text-xs outline-none read-only:hover:border-transparent",
         readOnly && "cursor-default",
         className,
       )}
@@ -241,7 +250,7 @@ export function OrderedPicker({
   lengths?: PrefixLengths;
 }) {
   if (options.length === 0)
-    return <p className="text-muted-foreground text-[11px]">{empty ?? "Nothing to pick"}</p>;
+    return <p className="text-muted-foreground text-xs">{empty ?? "Nothing to pick"}</p>;
   const find = (name: string) =>
     lengths ? value.findIndex((e) => entryBase(e) === name) : value.indexOf(name);
   const unsized = lengths
@@ -262,12 +271,12 @@ export function OrderedPicker({
               aria-pressed={on}
               onClick={() => onChange(on ? value.filter((_, i) => i !== pos) : [...value, name])}
               className={cn(
-                "border-border hover:bg-muted focus-visible:ring-ring/50 inline-flex h-6 items-center gap-1 rounded-md border px-1.5 font-mono text-[11px] outline-none focus-visible:ring-2",
-                on && "border-brand/60 bg-brand-soft text-foreground hover:bg-brand-soft",
+                "border-border hover:bg-accent focus-visible:ring-ring/50 inline-flex h-6 items-center gap-1 rounded-md border px-1.5 font-mono text-xs transition-colors outline-none focus-visible:ring-2",
+                on && "border-brand/60 bg-brand-soft text-brand hover:bg-brand-soft",
               )}
             >
               {on && (
-                <span className="bg-brand text-primary-foreground inline-flex size-3.5 items-center justify-center rounded-full font-sans text-[9px] font-semibold tabular-nums">
+                <span className="bg-brand text-primary-foreground inline-flex size-3.5 items-center justify-center rounded-full font-sans text-[9px] font-medium tabular-nums">
                   {pos + 1}
                 </span>
               )}
@@ -297,7 +306,7 @@ export function OrderedPicker({
                 spellCheck={false}
                 autoComplete="off"
                 className={cn(
-                  "border-border bg-background placeholder:text-muted-foreground/50 focus-visible:ring-ring/50 h-6 w-11 rounded-md border px-1 text-center font-mono text-[11px] outline-none focus-visible:ring-2",
+                  "border-border bg-background placeholder:text-muted-foreground focus-visible:ring-ring/50 h-6 w-11 rounded-md border px-1 text-center font-mono text-xs outline-none focus-visible:ring-2",
                   lengths.required(name) && length === null && "border-warning",
                 )}
               />
@@ -306,7 +315,7 @@ export function OrderedPicker({
         })}
       </div>
       {unsized.length > 0 && (
-        <p role="status" className="text-warning text-[11px]">
+        <p role="status" className="text-warning text-xs">
           {unsized.map((c) => `“${c}”`).join(", ")} {unsized.length === 1 ? "is a" : "are"} TEXT or
           BLOB {unsized.length === 1 ? "column" : "columns"}: MySQL cannot index{" "}
           {unsized.length === 1 ? "it" : "them"} in full, type a length.
@@ -316,25 +325,26 @@ export function OrderedPicker({
   );
 }
 
-/** Label + control row used by the small DDL dialogs. */
+/**
+ * Label + control row of the small DDL dialogs and popovers: the shared stacked `FormField`
+ * (docs/ui-conventions.md, Forms), kept under this name for the dialogs that import it.
+ */
 export function Field({
   label,
   htmlFor,
   hint,
+  error,
   children,
 }: {
   label: string;
   htmlFor?: string;
   hint?: ReactNode;
+  error?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1">
-      <label htmlFor={htmlFor} className="text-muted-foreground text-[11px] font-medium">
-        {label}
-      </label>
+    <FormField label={label} htmlFor={htmlFor} hint={hint} error={error}>
       {children}
-      {hint && <p className="text-muted-foreground text-[11px]">{hint}</p>}
-    </div>
+    </FormField>
   );
 }

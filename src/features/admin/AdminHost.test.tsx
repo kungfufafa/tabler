@@ -271,7 +271,7 @@ describe("process list", () => {
       ["c1", { kind: "operation", label: "Kill the query of 2 processes", write: true }],
     ]);
     await waitFor(() =>
-      expect(toast.success).toHaveBeenCalledWith("Cancelled the query of 2 processes"),
+      expect(toast.success).toHaveBeenCalledWith("Canceled the query of 2 processes"),
     );
   });
 
@@ -358,7 +358,7 @@ describe("user management", () => {
     fireEvent.click(await within(dialog).findByRole("option", { name: /^app/ }));
     const grid = await within(dialog).findByRole("group", { name: "Global privileges" });
     expect(within(grid).getByRole("checkbox", { name: "SELECT" })).toBeChecked();
-    const apply_ = within(dialog).getByRole("button", { name: "Apply" });
+    const apply_ = within(dialog).getByRole("button", { name: /^Apply/ });
     expect(apply_).toBeDisabled();
     fireEvent.click(within(grid).getByRole("checkbox", { name: "PROCESS" }));
     fireEvent.change(within(dialog).getByLabelText("Password"), { target: { value: "s3cret!" } });
@@ -397,7 +397,7 @@ describe("user management", () => {
     fireEvent.click(within(dialog).getByRole("option", { name: /root/ }));
     const ask = await screen.findByRole("alertdialog");
     expect(ask).toHaveTextContent("Discard changes?");
-    fireEvent.click(within(ask).getByRole("button", { name: "Keep editing" }));
+    fireEvent.click(within(ask).getByRole("button", { name: "Keep Editing" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(within(dialog).getByLabelText("User name")).toHaveValue("app2");
     fireEvent.click(within(dialog).getByRole("button", { name: "Discard" }));
@@ -423,7 +423,7 @@ describe("user management", () => {
       target: { value: "reader" },
     });
     fireEvent.click(within(dialog).getByRole("checkbox", { name: /Create databases/ }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Create/ }));
     await waitFor(() => expect(apply).toHaveBeenCalled());
     const change = apply.mock.calls[0]![1];
     expect(change.original).toBeNull();

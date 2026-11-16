@@ -3,7 +3,8 @@ import { EditorView } from "@codemirror/view";
 import { FileCode2, FolderOpen, Info, Save } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { Kbd } from "@/components/Kbd";
+import { FormError } from "@/components/FormError";
+import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -53,7 +54,7 @@ function Tip({
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent className="flex items-center gap-1.5">
         {label}
-        {combo && <Kbd combo={combo} className="border-border/40 bg-transparent text-inherit" />}
+        {combo && <KbdHint combo={combo} />}
       </TooltipContent>
     </Tooltip>
   );
@@ -74,13 +75,7 @@ export function ViewerNotice({
     >
       <span className="min-w-0 flex-1 truncate">{message}</span>
       {actions.map((a) => (
-        <Button
-          key={a.label}
-          size="xs"
-          variant={a.primary ? "default" : "ghost"}
-          className="h-6 text-[11px]"
-          onClick={a.run}
-        >
+        <Button key={a.label} size="xs" variant={a.primary ? "default" : "outline"} onClick={a.run}>
           {a.label}
         </Button>
       ))}
@@ -195,17 +190,17 @@ export function SqlViewer({ viewerKey, active, onOpenPath, notice }: SqlViewerPr
 
   return (
     <div className="bg-background flex h-full min-h-0 flex-col" data-slot="sql-viewer">
-      <div className="border-border bg-surface flex h-8 shrink-0 items-center gap-1 border-b px-2 text-xs">
+      <div className="border-border bg-surface flex h-8 shrink-0 items-center gap-1 border-b px-3 text-xs">
         <FileCode2 className="text-muted-foreground size-3.5 shrink-0" aria-hidden />
         <span className="min-w-0 truncate font-medium" title={doc?.path ?? undefined}>
           {viewerTitle(doc)}
         </span>
         {doc?.dirty && (
-          <span className="text-muted-foreground shrink-0 text-[11px]" aria-label="Edited">
+          <span className="text-muted-foreground shrink-0" aria-label="Edited">
             — Edited
           </span>
         )}
-        <span className="text-muted-foreground ml-1 hidden shrink-0 text-[11px] sm:inline">
+        <span className="text-muted-foreground ml-1 hidden shrink-0 sm:inline">
           SQL Viewer · runs nothing
         </span>
         <div className="flex-1" />
@@ -214,8 +209,8 @@ export function SqlViewer({ viewerKey, active, onOpenPath, notice }: SqlViewerPr
             size="sm"
             aria-label="SQL dialect"
             className={cn(
-              "text-muted-foreground hover:text-foreground hover:bg-muted dark:hover:bg-muted/50 gap-1 border-transparent bg-transparent px-1.5 text-[11px] shadow-none data-[size=sm]:h-6 dark:bg-transparent [&_svg]:size-3",
-              "data-[state=open]:bg-muted data-[state=open]:text-foreground",
+              "text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent gap-1 border-transparent bg-transparent px-1.5 text-xs shadow-none data-[size=sm]:h-6 dark:bg-transparent [&_svg]:size-3",
+              "data-[state=open]:bg-accent data-[state=open]:text-foreground",
             )}
           >
             <SelectValue>{DIALECT_LABELS[dialect]}</SelectValue>
@@ -232,10 +227,10 @@ export function SqlViewer({ viewerKey, active, onOpenPath, notice }: SqlViewerPr
           <Button
             size="xs"
             variant="ghost"
-            className="h-6 gap-1 px-1.5 text-[11px]"
+            className="hover:bg-accent dark:hover:bg-accent px-1.5"
             onClick={() => void open()}
           >
-            <FolderOpen className="size-3" />
+            <FolderOpen />
             Open…
           </Button>
         </Tip>
@@ -243,17 +238,17 @@ export function SqlViewer({ viewerKey, active, onOpenPath, notice }: SqlViewerPr
           <Button
             size="xs"
             variant="ghost"
-            className="h-6 gap-1 px-1.5 text-[11px]"
+            className="hover:bg-accent dark:hover:bg-accent px-1.5"
             onClick={() => void save()}
           >
-            <Save className="size-3" />
+            <Save />
             Save
           </Button>
         </Tip>
         <Button
           size="xs"
           variant="ghost"
-          className="h-6 px-1.5 text-[11px]"
+          className="hover:bg-accent dark:hover:bg-accent px-1.5"
           onClick={() => void saveAs()}
         >
           Save As…
@@ -264,7 +259,7 @@ export function SqlViewer({ viewerKey, active, onOpenPath, notice }: SqlViewerPr
         <div
           role="status"
           data-testid="head-notice"
-          className="border-border bg-muted/50 text-muted-foreground flex shrink-0 items-center gap-1.5 border-b px-3 py-1 text-[11px]"
+          className="border-border bg-surface-2 text-muted-foreground flex min-h-6 shrink-0 items-center gap-1.5 border-b px-3 py-1 text-xs"
         >
           <Info aria-hidden className="size-3 shrink-0" />
           <span className="min-w-0 truncate">{doc.headNotice}</span>
@@ -280,8 +275,8 @@ export function SqlViewer({ viewerKey, active, onOpenPath, notice }: SqlViewerPr
         />
       )}
       {doc?.error && !doc.loading && (
-        <div className="text-destructive border-border shrink-0 border-b px-3 py-1.5 text-xs">
-          {doc.error}
+        <div className="border-border shrink-0 border-b px-3 py-1.5">
+          <FormError>{doc.error}</FormError>
         </div>
       )}
       <div

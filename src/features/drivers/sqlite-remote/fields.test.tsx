@@ -91,7 +91,7 @@ describe("D1's fields", () => {
     buildMockDrivers(["d1"]);
     const util = vi.spyOn(ipc, "driverUtil");
     render(<Harness ui={d1Ui} values={{ ...values, password: "tok" }} />);
-    fireEvent.click(screen.getByRole("button", { name: "List databases" }));
+    fireEvent.click(screen.getByRole("button", { name: "List Databases" }));
     expect(await screen.findByText("2 databases: pick one in Database")).toBeInTheDocument();
     const [input, method] = util.mock.calls[0]!;
     expect(method).toBe("listDatabases");
@@ -107,11 +107,11 @@ describe("D1's fields", () => {
 
   it("ask for the token first, and show the backend's refusal", async () => {
     render(<Harness ui={d1Ui} values={values} />);
-    fireEvent.click(screen.getByRole("button", { name: "List databases" }));
+    fireEvent.click(screen.getByRole("button", { name: "List Databases" }));
     expect(await screen.findByText("Enter the API token first")).toBeInTheDocument();
     // Not built into this (mock) Tabler: the call is refused, and the form says why.
     current!.setValue("password", "tok");
-    fireEvent.click(screen.getByRole("button", { name: "List databases" }));
+    fireEvent.click(screen.getByRole("button", { name: "List Databases" }));
     expect(await screen.findByText(/not built into this Tabler/)).toBeInTheDocument();
   });
 
@@ -121,7 +121,7 @@ describe("D1's fields", () => {
       { uuid: "u-1", name: "only", createdAt: null, fileSize: null },
     ]);
     render(<Harness ui={d1Ui} values={{ ...values, password: "tok" }} />);
-    fireEvent.click(screen.getByRole("button", { name: "List databases" }));
+    fireEvent.click(screen.getByRole("button", { name: "List Databases" }));
     await waitFor(() => expect(current!.getValues("database")).toBe("only"));
     expect(screen.getByLabelText("Account ID")).toHaveValue(ACCOUNT);
     expect(screen.getByLabelText("API base")).toHaveAttribute(

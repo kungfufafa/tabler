@@ -143,7 +143,7 @@ describe("find in results", { timeout: 20_000 }, () => {
     expect(counter()).toHaveTextContent("5 of 5");
     // Match Case: the emails are lower case.
     fireEvent.click(within(findBar()).getByRole("button", { name: "Match Case" }));
-    await waitFor(() => expect(counter()).toHaveTextContent("No results"));
+    await waitFor(() => expect(counter()).toHaveTextContent("No matches"));
     fireEvent.keyDown(field, { key: "Escape" });
     expect(screen.queryByRole("search", { name: "Find in result" })).not.toBeInTheDocument();
   });
@@ -168,7 +168,7 @@ describe("find in results", { timeout: 20_000 }, () => {
     fireEvent.click(within(bar).getByRole("button", { name: "Replace All" }));
     expect(pendingForTab(useResultsStore.getState(), id)).toBe(5);
     expect(toast.message).toHaveBeenCalledWith("Replaced 5 values", {});
-    await waitFor(() => expect(counter()).toHaveTextContent("No results"));
+    await waitFor(() => expect(counter()).toHaveTextContent("No matches"));
     const staged = [...useResultsStore.getState().edits[resultId]!.staging.changes.values()];
     expect(staged.flatMap((c) => [...c.patch.values()])[0]).toEqual({
       t: "text",
@@ -218,7 +218,7 @@ describe("find in results", { timeout: 20_000 }, () => {
     fireEvent.pointerDown(header, { button: 2 });
     fireEvent.contextMenu(header);
     fireEvent.click(screen.getByRole("menuitem", { name: /Hide Column/ }));
-    await waitFor(() => expect(counter()).toHaveTextContent("No results"));
+    await waitFor(() => expect(counter()).toHaveTextContent("No matches"));
     // Nothing to replace unseen.
     expect(within(bar).getByRole("button", { name: "Replace All" })).toBeDisabled();
     expect(pendingForTab(useResultsStore.getState(), id)).toBe(0);

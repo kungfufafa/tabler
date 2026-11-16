@@ -1,5 +1,6 @@
 import { Ban, ImagePlus, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -72,12 +73,12 @@ export function GroupIconPicker({
             onClick={() => onChange(id)}
             onKeyDown={(e) => onKeyDown(e, i)}
             className={cn(
-              "border-border text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring/50 flex h-9 items-center justify-center rounded-md border outline-none focus-visible:ring-2",
+              "border-border text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring/50 flex h-9 items-center justify-center rounded-md border transition-colors outline-none focus-visible:ring-2",
               checked &&
                 "border-brand bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand",
             )}
           >
-            <Icon className={cn("size-4", !id && "opacity-60")} aria-hidden />
+            <Icon className="size-4" aria-hidden />
           </button>
         );
       })}
@@ -86,9 +87,9 @@ export function GroupIconPicker({
 }
 
 /**
- * The group's own image (TablePlus: a group takes an image as well as an icon): "Choose image…"
+ * The group's own image (TablePlus: a group takes an image as well as an icon): "Choose Image…"
  * (a PNG, JPEG, WebP, SVG or GIF file, drawn onto 64x64 and kept as a PNG data URI) and "Remove
- * image". The image takes the icon's place on the group's header.
+ * Image". The image takes the icon's place on the group's header.
  */
 export function GroupImagePicker({
   value,
@@ -113,7 +114,7 @@ export function GroupImagePicker({
     }
   };
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1">
       <div className="flex items-center gap-2">
         {value && (
           <img
@@ -145,22 +146,22 @@ export function GroupImagePicker({
           onClick={() => input.current?.click()}
         >
           <ImagePlus aria-hidden />
-          Choose image…
+          Choose Image…
         </Button>
         {value && (
           <Button type="button" variant="ghost" size="sm" onClick={() => onChange(null)}>
             <X aria-hidden />
-            Remove image
+            Remove Image
           </Button>
         )}
       </div>
       {error ? (
-        <p role="alert" className="text-error text-[11px]">
+        <p role="alert" className="text-error text-xs leading-4">
           {error}
         </p>
       ) : (
         value && (
-          <p className="text-muted-foreground text-[11px]">
+          <p className="text-muted-foreground text-xs leading-4">
             The image is shown instead of the icon.
           </p>
         )
@@ -259,11 +260,11 @@ export function GroupNameDialog({
       <DialogContent className="sm:max-w-md">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>{title}</DialogTitle>
-            <DialogDescription>{description}</DialogDescription>
+            <DialogTitle className="text-sm">{title}</DialogTitle>
+            <DialogDescription className="text-xs">{description}</DialogDescription>
           </DialogHeader>
           {shown?.kind !== "icon" && (
-            <div className="flex flex-col gap-1">
+            <FormField label="Name" htmlFor={`${id}-name`} error={error}>
               <Input
                 id={`${id}-name`}
                 aria-label="Group name"
@@ -273,27 +274,21 @@ export function GroupNameDialog({
                   setError(null);
                 }}
                 aria-invalid={error ? true : undefined}
-                placeholder="Group name"
+                aria-describedby={error ? `${id}-name-error` : undefined}
                 autoComplete="off"
+                className="text-sm"
                 autoFocus
               />
-              {error && (
-                <p role="alert" className="text-error text-[11px]">
-                  {error}
-                </p>
-              )}
-            </div>
+            </FormField>
           )}
-          <div className="flex flex-col gap-1.5">
-            <span className="text-muted-foreground text-xs">Icon</span>
+          <FormField label="Icon">
             <GroupIconPicker value={icon} onChange={setIcon} />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <span className="text-muted-foreground text-xs">Image</span>
+          </FormField>
+          <FormField label="Image">
             <GroupImagePicker value={image} onChange={setImage} />
-          </div>
+          </FormField>
           <DialogFooter>
-            <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+            <Button type="button" variant="outline" size="sm" onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy}>

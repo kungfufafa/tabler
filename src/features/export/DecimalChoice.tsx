@@ -66,12 +66,12 @@ export function DecimalChoice({
               setText(next);
               if (commitInvalid || decimalProblem(next, delimiter) === null) onChange(next);
             }}
-            className="h-7 w-12 text-center font-mono text-xs"
+            className="h-7 w-12 rounded-md text-center font-mono text-xs md:text-xs"
           />
         )}
       </div>
       {problem && !commitInvalid && (
-        <span role="status" className="text-warning text-[11px] leading-4">
+        <span role="status" className="text-warning text-xs leading-4">
           {problem}
         </span>
       )}

@@ -22,7 +22,7 @@ export async function pickNewDuckdbFile(): Promise<string | null> {
   if (isMock) return window.prompt("Create DuckDB file at", "/Users/me/database.duckdb");
   const { save } = await import("@tauri-apps/plugin-dialog");
   const picked = await save({
-    title: "New DuckDB database",
+    title: "New DuckDB Database",
     defaultPath: "database.duckdb",
     filters: DUCKDB_FILTERS,
   });

@@ -1,3 +1,4 @@
+import { EmptyState } from "@/components/EmptyState";
 import { JsonDocumentEditor } from "@/features/documents/JsonDocumentEditor";
 import {
   DYNAMODB_JSON,
@@ -17,9 +18,9 @@ const FORMATS = [DYNAMODB_JSON, DYNAMODB_PLAIN_JSON];
 export function DynamoInspector({ row, columns, onStage }: InspectorSlotProps) {
   if (!row)
     return (
-      <p className="text-muted-foreground p-3 text-xs" data-testid="dynamo-no-item">
-        Select an item to see it whole.
-      </p>
+      <div className="h-full" data-testid="dynamo-no-item">
+        <EmptyState title="No item selected" description="Select an item to see it whole." />
+      </div>
     );
   const keys = columns.filter((c) => c.isPk).map((c) => c.name);
   return (

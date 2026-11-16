@@ -1,6 +1,7 @@
 import { KeyRound, ListPlus, Plus, SlidersHorizontal, Trash2, Undo2 } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { Kbd } from "@/components/Kbd";
+import { SectionLabel } from "@/components/SectionLabel";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -32,7 +33,7 @@ import { ForeignKeyForm } from "./KeyDialogs";
 import type { ColumnRow, FkRow, StructureView } from "./model";
 import { columnCheck } from "./objects";
 import { BlankRow, EmptyRow } from "./OtherSections";
-import { CellInput, Field, HEAD_ROW, IconAction, SectionHeader } from "./parts";
+import { BAR_BUTTON, CellInput, Field, HEAD_ROW, IconAction, SectionHeader } from "./parts";
 
 export interface ColumnHandlers {
   onEdit: (key: string, field: ColumnField, raw: string | boolean) => void;
@@ -124,9 +125,9 @@ export function ColumnsSection({
     <section aria-label="Columns">
       <SectionHeader title="Columns" count={live}>
         {editable && (
-          <Button variant="ghost" size="xs" onClick={() => handlers.onAdd()}>
+          <Button variant="ghost" size="xs" onClick={() => handlers.onAdd()} className={BAR_BUTTON}>
             <Plus /> Column
-            {newKeys && <Kbd combo={newKeys} className="ml-0.5" />}
+            {newKeys && <Kbd combo={newKeys} />}
           </Button>
         )}
       </SectionHeader>
@@ -192,7 +193,7 @@ export function ColumnsSection({
           {shown.length === 0 && (
             <EmptyRow
               span={cols.length + 2}
-              text={rows.length === 0 ? "No columns" : `No column matches “${filter.trim()}”`}
+              text={rows.length === 0 ? "No columns" : "No matches"}
               kind={editable ? "columns" : undefined}
             />
           )}
@@ -297,7 +298,7 @@ function ColumnRowView({
       case "dataType":
         return (
           <td key={c} className={cn("px-1", changed("dataType"))}>
-            {text("dataType", "font-mono text-[11px]")}
+            {text("dataType", "font-mono")}
           </td>
         );
       case "nullable": {
@@ -312,7 +313,7 @@ function ColumnRowView({
               label={`${r.name} nullable`}
               cellKey={`${r.key}:nullable`}
               disabled={!canEdit || r.isPk}
-              className={cn("font-mono text-[11px]", strike)}
+              className={cn("font-mono", strike)}
             />
           </td>
         );
@@ -336,7 +337,7 @@ function ColumnRowView({
               cellKey={`${r.key}:check`}
               label={`${r.name} check`}
               readOnly={!canEdit || added}
-              className={cn("font-mono text-[11px]", strike)}
+              className={cn("font-mono", strike)}
             />
           </td>
         );
@@ -349,7 +350,7 @@ function ColumnRowView({
             dialect={dialect}
             canEdit={canEdit}
             changedClass={changed("defaultExpr", "autoIncrement")}
-            input={text("defaultExpr", "font-mono text-[11px]", placeholderOf(dialect, r))}
+            input={text("defaultExpr", "font-mono", placeholderOf(dialect, r))}
             onPreset={(p, v) => handlers.onPreset(r.key, p, v)}
           />
         );
@@ -428,7 +429,7 @@ function ColumnRowView({
         if (editable) rowDeleteKey(e, dropRows);
       }}
       className={cn(
-        "group border-gridline h-7 border-b outline-none",
+        "group border-gridline focus-visible:ring-ring h-7 border-b outline-none focus-visible:ring-1 focus-visible:ring-inset",
         r.status === "existing" && "focus-within:bg-row-hover",
         selected && "bg-brand-soft",
         added && "bg-inserted",
@@ -448,7 +449,7 @@ function ColumnRowView({
               : undefined
           }
           className={cn(
-            "text-muted-foreground focus-visible:text-foreground focus:bg-accent w-full rounded-sm px-1 text-right font-mono text-[10px] tabular-nums outline-none",
+            "text-muted-foreground focus-visible:text-foreground focus-visible:ring-ring w-full rounded-sm px-1 text-right font-mono text-xs tabular-nums outline-none focus-visible:ring-1 focus-visible:ring-inset",
             selected && "text-foreground font-semibold",
           )}
         >
@@ -493,28 +494,23 @@ function ColumnRowView({
   );
   if (!editable) return rowEl;
   // Right-click menu of the row: MySQL places a new column after this one (`AFTER`).
-  const item = "py-0.5 text-xs";
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{rowEl}</ContextMenuTrigger>
       <ContextMenuContent className="min-w-44" aria-label={`Column ${r.name}`}>
         {supportsColumnPosition(dialect) && !dropped && (
-          <ContextMenuItem className={item} onSelect={() => onAdd(r.name)}>
-            Insert Column After
-          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => onAdd(r.name)}>Insert Column After</ContextMenuItem>
         )}
-        <ContextMenuItem className={item} onSelect={() => onAdd()}>
-          Add Column
-        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => onAdd()}>Add Column</ContextMenuItem>
         <ContextMenuSeparator />
         {dropped ? (
-          <ContextMenuItem className={item} onSelect={dropRows}>
-            {many ? `Restore ${targets.length} columns` : "Restore Column"}
+          <ContextMenuItem onSelect={dropRows}>
+            {many ? `Restore ${targets.length} Columns` : "Restore Column"}
           </ContextMenuItem>
         ) : (
-          <ContextMenuItem className={item} onSelect={dropRows}>
+          <ContextMenuItem onSelect={dropRows}>
             {many
-              ? `Delete ${targets.length} columns`
+              ? `Delete ${targets.length} Columns`
               : added
                 ? "Remove New Column"
                 : "Delete Column"}
@@ -597,7 +593,7 @@ function DefaultCell({
             )}
           </div>
         </PopoverAnchor>
-        <PopoverContent align="start" className="w-64 p-2.5">
+        <PopoverContent align="start" className="w-64 gap-2 p-3 text-xs">
           <form
             className="flex flex-col gap-2"
             onSubmit={(e) => {
@@ -612,18 +608,18 @@ function DefaultCell({
                 autoFocus
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
-                placeholder="value (quoted for you)"
-                className="h-7 font-mono text-xs md:text-xs"
+                placeholder="Value (quoted for you)"
+                className="h-7 rounded-md font-mono text-xs md:text-xs"
                 spellCheck={false}
                 autoComplete="off"
               />
             </Field>
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="xs" onClick={() => setConstant(null)}>
+              <Button type="button" variant="outline" size="xs" onClick={() => setConstant(null)}>
                 Cancel
               </Button>
               <Button type="submit" size="xs">
-                Set default
+                Set Default
               </Button>
             </div>
           </form>
@@ -662,7 +658,7 @@ function FkCell({
       disabled={!canEdit && !fk}
       className={cn(
         CELL_BUTTON,
-        "font-mono text-[11px]",
+        "font-mono",
         fk?.status === "added" && "bg-inserted",
         !canEdit && "pointer-events-none",
       )}
@@ -673,11 +669,11 @@ function FkCell({
   );
   if (!canEdit) return trigger;
   return (
-    <CellPopover open={open} onOpenChange={setOpen} trigger={trigger} className="w-[26rem]">
-      <p className="mb-2 text-xs font-medium">
+    <CellPopover open={open} onOpenChange={setOpen} trigger={trigger}>
+      <SectionLabel as="p">
         {fk ? "Foreign key" : "Create a foreign key on column"}{" "}
         <span className="font-mono">{r.name}</span>
-      </p>
+      </SectionLabel>
       <ForeignKeyForm
         connectionId={connectionId}
         table={table}
@@ -741,7 +737,7 @@ function DetailsButton({
           tabIndex={-1}
           aria-label="Column details"
           className={cn(
-            "text-muted-foreground hover:text-foreground",
+            "text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent",
             r.changed.includes("collation") && "text-brand",
           )}
         >
@@ -757,9 +753,9 @@ function DetailsButton({
           setOpen(false);
         }}
       >
-        <p className="text-xs font-medium">
+        <SectionLabel as="p">
           <span className="font-mono">{r.name}</span> details
-        </p>
+        </SectionLabel>
         <Field label="Collation" htmlFor={id} hint="Empty: the table's default collation.">
           <Input
             id={id}
@@ -767,17 +763,17 @@ function DetailsButton({
             value={value}
             onChange={(e) => setValue(e.target.value)}
             placeholder="utf8mb4_0900_ai_ci"
-            className="h-7 font-mono text-xs md:text-xs"
+            className="h-7 rounded-md font-mono text-xs md:text-xs"
             spellCheck={false}
             autoComplete="off"
           />
         </Field>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="ghost" size="xs" onClick={() => setOpen(false)}>
+          <Button type="button" variant="outline" size="xs" onClick={() => setOpen(false)}>
             Cancel
           </Button>
           <Button type="submit" size="xs">
-            Ok
+            OK
           </Button>
         </div>
       </form>

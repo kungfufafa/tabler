@@ -110,7 +110,7 @@ afterEach(() => {
   Object.values(toast).forEach((fn) => fn.mockReset());
 });
 
-const sheet = () => screen.findByRole("dialog", { name: "Preview changes" });
+const sheet = () => screen.findByRole("dialog", { name: "Preview Changes" });
 
 describe("the Preview SQL sheet's wording on MySQL", () => {
   it("rows only: one transaction, no DDL talk, and a failure says everything was reverted", async () => {

@@ -108,8 +108,8 @@ describe("Launcher", () => {
       expect(screen.getByRole("heading", { name: "Tabler" })).toBeInTheDocument();
       expect(await screen.findByText("Version 0.1.0")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /Create a new connection/ })).toBeEnabled();
-      expect(screen.getByRole("button", { name: /New connection from URL/ })).toBeEnabled();
-      expect(screen.getByRole("button", { name: /Import connections/ })).toBeEnabled();
+      expect(screen.getByRole("button", { name: /New Connection from URL/ })).toBeEnabled();
+      expect(screen.getByRole("button", { name: /Import Connections/ })).toBeEnabled();
       const bottom = screen.getByRole("navigation", { name: "Backup and restore" });
       expect(within(bottom).getByRole("button", { name: /Backup…/ })).toBeEnabled();
       expect(within(bottom).getByRole("button", { name: /Restore…/ })).toBeEnabled();
@@ -142,11 +142,11 @@ describe("Launcher", () => {
       expect(within(form).getByRole("radiogroup", { name: "Database" })).toBeVisible();
     });
 
-    it("New connection from URL… validates inline, then opens the form prefilled", async () => {
+    it("New Connection from URL… validates inline, then opens the form prefilled", async () => {
       const user = userEvent.setup();
       renderLauncher();
-      await user.click(screen.getByRole("button", { name: /New connection from URL/ }));
-      const dialog = await screen.findByRole("dialog", { name: "New connection from URL" });
+      await user.click(screen.getByRole("button", { name: /New Connection from URL/ }));
+      const dialog = await screen.findByRole("dialog", { name: "New Connection from URL" });
       const field = within(dialog).getByRole("textbox", { name: "Connection URL" });
 
       await user.type(field, "https://example.com{Enter}");
@@ -155,7 +155,7 @@ describe("Launcher", () => {
 
       await user.clear(field);
       await user.type(field, "postgresql://app:s3cret@db.example.com:6543/shop?name=Shop{Enter}");
-      const form = await screen.findByRole("dialog", { name: /New PostgreSQL connection/ });
+      const form = await screen.findByRole("dialog", { name: /New PostgreSQL Connection/ });
       expect(within(form).getByLabelText("Name")).toHaveValue("Shop");
       expect(within(form).getByLabelText("Host")).toHaveValue("db.example.com");
       expect(within(form).getByLabelText("Port")).toHaveValue("6543");
@@ -170,7 +170,7 @@ describe("Launcher", () => {
       const pg = await row("Local Postgres");
       expect(within(pg).getByText("local")).toBeInTheDocument();
       expect(within(pg).getByText("127.0.0.1 : 5432 : tabler : tabler_dev")).toBeInTheDocument();
-      expect(within(await row("Production (read-only)")).getByText("read-only")).toBeVisible();
+      expect(within(await row("Production (read-only)")).getByText("Read-only")).toBeVisible();
       expect(within(await row("Production (read-only)")).getByText("production")).toBeVisible();
       // No tag on profiles saved before tags existed.
       expect(within(await row("Rotated host")).queryByTitle(/^Tag:/)).toBeNull();
@@ -287,7 +287,7 @@ describe("Launcher", () => {
       renderLauncher();
 
       await user.click(await row("Local Postgres"));
-      await user.click(screen.getByRole("button", { name: "Open workspace" }));
+      await user.click(screen.getByRole("button", { name: "Open Workspace" }));
 
       expect(connect).not.toHaveBeenCalled();
       expect(useConnectionsStore.getState().activeId).toBe("postgres");
@@ -431,7 +431,7 @@ describe("Launcher", () => {
       // The launcher's own listener leaves ⌘N alone (the shortcut layer runs New Window).
       expect(event.defaultPrevented).toBe(false);
       expect(useConnectionDialog.getState()).toMatchObject({ open: false });
-      expect(screen.queryByRole("dialog", { name: "New connection" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: "New Connection" })).not.toBeInTheDocument();
     });
 
     it("⌘N runs New Window and opens no form when the shortcut layer is mounted", async () => {
@@ -452,7 +452,7 @@ describe("Launcher", () => {
       fireEvent.keyDown(list(), mod("N"));
       await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
       expect(useConnectionDialog.getState()).toMatchObject({ open: false });
-      expect(screen.queryByRole("dialog", { name: "New connection" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: "New Connection" })).not.toBeInTheDocument();
     });
   });
 
@@ -477,7 +477,7 @@ describe("Launcher", () => {
         "Edit…",
         "Duplicate",
         "Copy as URL",
-        "Copy as URL (without password)",
+        "Copy as URL (Without Password)",
         "Move to Group",
         "Export Connections",
         "Import Connections…",
@@ -550,16 +550,16 @@ describe("Launcher", () => {
         .getAllByRole("menuitem")
         .map((i) => i.textContent?.trim());
 
-    it("the … menu offers only what the window has no button for: New Group…, Sort by ▸, Export", async () => {
+    it("the … menu offers only what the window has no button for: New Group…, Sort By ▸, Export", async () => {
       const user = userEvent.setup();
       renderLauncher();
       await row("Local Postgres");
       await user.click(screen.getByRole("button", { name: "More connection actions" }));
       const menu = await screen.findByRole("menu");
-      expect(menuItems(menu)).toEqual(["New Group…", "Sort by", "Export Connections"]);
+      expect(menuItems(menu)).toEqual(["New Group…", "Sort By", "Export Connections"]);
     });
 
-    it("Sort by ▸ Name reorders each group and is remembered", async () => {
+    it("Sort By ▸ Name reorders each group and is remembered", async () => {
       const user = userEvent.setup();
       renderLauncher();
       await row("Rotated host");
@@ -569,7 +569,7 @@ describe("Launcher", () => {
           .map((o) => o.textContent);
       expect(staging()[0]).toContain("Staging via SSH");
       fireEvent.contextMenu(screen.getByTestId("connection-list-area"));
-      await openSub(user, "Sort by");
+      await openSub(user, "Sort By");
       await user.click(await screen.findByRole("menuitemradio", { name: "Name" }));
       expect(useLauncherPrefs.getState().sortBy).toBe("name");
       expect(staging()[0]).toContain("Rotated host");
@@ -831,19 +831,19 @@ describe("Launcher", () => {
         ]);
       });
 
-      it("New ▸ Connection in this group… opens the form with the group filled in", async () => {
+      it("New ▸ Connection in This Group… opens the form with the group filled in", async () => {
         const user = userEvent.setup();
         renderLauncher();
         await row("Rotated host");
         fireEvent.contextMenu(header("Staging"));
         await openSub(user, "New");
         await user.click(
-          await screen.findByRole("menuitem", { name: "Connection in this group…" }),
+          await screen.findByRole("menuitem", { name: "Connection in This Group…" }),
         );
         // Like New ▸ Connection…, it starts at the driver picker and keeps the group for the form.
         const picker = await screen.findByRole("dialog");
         await user.click(within(picker).getByRole("button", { name: "Create" }));
-        const form = await screen.findByRole("dialog", { name: /New PostgreSQL connection/ });
+        const form = await screen.findByRole("dialog", { name: /New PostgreSQL Connection/ });
         expect(within(form).getByLabelText("Group")).toHaveValue("Staging");
       });
 
@@ -858,7 +858,7 @@ describe("Launcher", () => {
         expect(within(match).getByLabelText("Group Staging / EU")).toHaveTextContent("StagingEU");
       });
 
-      it("Export this group… takes the subgroups and their connections along", async () => {
+      it("Export This Group… takes the subgroups and their connections along", async () => {
         const user = userEvent.setup();
         await ipc.settings.set("connectionGroups", [{ path: "Staging / Empty", icon: null }]);
         await ipc.profiles.moveToGroup(["p-rotated-ssh"], "Staging / EU");
@@ -866,7 +866,7 @@ describe("Launcher", () => {
         await row("Rotated host");
         fireEvent.contextMenu(header("Staging"));
         await openSub(user, "Export Connections");
-        await user.click(await screen.findByRole("menuitem", { name: "Export this group…" }));
+        await user.click(await screen.findByRole("menuitem", { name: "Export This Group…" }));
         expect(useConnectionsIo.getState().exportScope).toEqual({
           title: "Export “Staging”",
           profileIds: ["p-staging-ssh", "p-rotated-ssh"],
@@ -876,12 +876,12 @@ describe("Launcher", () => {
       });
     });
 
-    it("Export Connections ▸ Export this group… opens the export dialog for the group", async () => {
+    it("Export Connections ▸ Export This Group… opens the export dialog for the group", async () => {
       const user = userEvent.setup();
       renderLauncher();
       fireEvent.contextMenu(await row("Rotated host"));
       await openSub(user, "Export Connections");
-      await user.click(await screen.findByRole("menuitem", { name: "Export this group…" }));
+      await user.click(await screen.findByRole("menuitem", { name: "Export This Group…" }));
       expect(useConnectionsIo.getState().exportScope).toEqual({
         title: "Export “Staging”",
         profileIds: ["p-staging-ssh", "p-rotated-ssh"],
@@ -891,12 +891,12 @@ describe("Launcher", () => {
       expect(await screen.findByRole("dialog", { name: "Export “Staging”" })).toBeVisible();
     });
 
-    it("Import connections… picks a file, asks its password and imports the ticked ones", async () => {
+    it("Import Connections… picks a file, asks its password and imports the ticked ones", async () => {
       vi.spyOn(window, "prompt").mockReturnValue(DEMO_IMPORT_PATH);
       const user = userEvent.setup();
       renderLauncher();
       await row("Local Postgres");
-      await user.click(screen.getByRole("button", { name: /Import connections/ }));
+      await user.click(screen.getByRole("button", { name: /Import Connections/ }));
       const dialog = await screen.findByRole("dialog", { name: "Import Connections" });
       await user.type(await within(dialog).findByLabelText("File password"), "tabler{Enter}");
       await user.click(

@@ -100,7 +100,7 @@ afterEach(() => {
 
 async function openPicker(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("radio", { name: "Custom…" }));
-  return (await screen.findByLabelText("Colour picker")) as HTMLInputElement;
+  return (await screen.findByLabelText("Color picker")) as HTMLInputElement;
 }
 
 describe("the colour row of the status details", () => {
@@ -121,7 +121,7 @@ describe("the colour row of the status details", () => {
     // One save at a time.
     expect(overlap).toBe(1);
     // The picker did not snap back to an earlier colour.
-    expect((await screen.findByLabelText("Colour picker")) as HTMLInputElement).toHaveValue(
+    expect((await screen.findByLabelText("Color picker")) as HTMLInputElement).toHaveValue(
       "#303030",
     );
     expect(toast.error).not.toHaveBeenCalled();
@@ -197,7 +197,7 @@ describe("the colour row of the status details", () => {
     fireEvent.change(picker, { target: { value: "#202020" } });
     await settle();
     expect(toast.error).toHaveBeenCalledWith(
-      "Could not change the colour",
+      "Could not change the color",
       expect.objectContaining({ description: expect.stringContaining("disk full") }),
     );
     expect(storeColor()).toBe("blue");

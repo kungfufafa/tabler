@@ -254,9 +254,9 @@ describe("ExportDialog", () => {
     await user.click(within(dialog).getByRole("button", { name: /^Export…/ }));
     await waitFor(() => expect(useExportStore.getState().run?.rows ?? 0).toBeGreaterThan(0));
     expect(within(dialog).getByRole("status")).toHaveTextContent(/rows/);
-    await user.click(within(dialog).getByRole("button", { name: "Cancel export" }));
+    await user.click(within(dialog).getByRole("button", { name: "Cancel Export" }));
     await waitFor(() =>
-      expect(toast.message).toHaveBeenCalledWith("Export cancelled", {
+      expect(toast.message).toHaveBeenCalledWith("Export canceled", {
         description: "No file was written.",
       }),
     );
@@ -538,7 +538,7 @@ describe("ExportDialog", () => {
       act(() => openExport({ connectionId: info.connectionId, source: held() }));
       const dialog = await screen.findByRole("dialog");
       const fields = within(dialog).getByLabelText("Fields");
-      expect(fields).toHaveAttribute("placeholder", "Export all fields…");
+      expect(fields).toHaveAttribute("placeholder", "All fields");
       await user.type(fields, "email, nope");
       expect(within(dialog).getByText(/No field named "nope"/)).toBeInTheDocument();
       expect(exportButton(dialog)).toBeDisabled();
@@ -623,8 +623,8 @@ describe("ExportDialog", () => {
       act(() => openExport({ connectionId: info.connectionId, source }));
       const dialog = await screen.findByRole("dialog");
       expect(within(dialog).getByText("· 2 rows shown")).toBeInTheDocument();
-      expect(within(dialog).getByText("· cancelled")).toBeInTheDocument();
-      expect(within(dialog).getByText(/statement was cancelled/)).toBeInTheDocument();
+      expect(within(dialog).getByText("· canceled")).toBeInTheDocument();
+      expect(within(dialog).getByText(/statement was canceled/)).toBeInTheDocument();
       // Default: the rows that arrived, as shown; "All rows" runs the statement again.
       expect(within(dialog).getByRole("radio", { name: "The 2 rows shown" })).toHaveAttribute(
         "aria-checked",
@@ -1439,7 +1439,7 @@ describe("ExportDialog", () => {
       const dialog = await screen.findByRole("dialog");
       await user.click(within(dialog).getByRole("radio", { name: "All results (2)" }));
       expect(within(dialog).getByText(/1 result stopped at the row limit/)).toBeVisible();
-      expect(within(dialog).getByText(/1 result cancelled or failed partway/)).toBeVisible();
+      expect(within(dialog).getByText(/1 result canceled or failed partway/)).toBeVisible();
       expect(exportButton(dialog)).toBeEnabled();
       // A binary value cut to its preview in the second result.
       const second = runResultsOf(tabId)[1]!;

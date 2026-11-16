@@ -72,7 +72,7 @@ describe("Redshift's IAM sign-in", () => {
 
   it("fills the Command password and the IAM: user from the row's button", () => {
     render(<Harness values={{ host: CLUSTER, user: "alice", database: "dev" }} />);
-    fireEvent.click(screen.getByRole("button", { name: "Use IAM credentials" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use IAM Credentials" }));
     const v = current!.getValues();
     expect(v.passwordMode).toBe("command");
     expect(v.passwordCommand).toContain("--cluster-identifier examplecluster --db-user alice");
@@ -82,7 +82,7 @@ describe("Redshift's IAM sign-in", () => {
 
   it("says why when the host is not a Redshift endpoint, changing nothing", () => {
     render(<Harness values={{ host: "db.example.com", user: "alice" }} />);
-    fireEvent.click(screen.getByRole("button", { name: "Use IAM credentials" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use IAM Credentials" }));
     expect(current!.getValues().passwordMode).toBe("keychain");
     expect(screen.getByText(/not a Redshift endpoint/)).toBeInTheDocument();
   });

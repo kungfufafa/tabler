@@ -22,7 +22,7 @@ export function EmptyState({
         className,
       )}
     >
-      {Icon && <Icon className="text-muted-foreground/60 size-6" />}
+      {Icon && <Icon aria-hidden className="text-muted-foreground/60 size-6" />}
       <p className="text-sm font-medium">{title}</p>
       {description && <p className="text-muted-foreground max-w-xs text-xs">{description}</p>}
       {children && <div className="mt-2 flex gap-2">{children}</div>}

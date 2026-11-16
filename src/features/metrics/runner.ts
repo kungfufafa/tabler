@@ -75,7 +75,7 @@ export async function runBoardQuery(q: BoardQuery): Promise<MetricsResult> {
   if (writes && !q.allowWrites) throw new BoardQueryError(WRITE_REFUSED, "refused");
   if (writes && q.automatic) throw new BoardQueryError(AUTOMATIC_WRITE_REFUSED, "refused");
   if (writes && !(await guardExecution(q.connectionId, { kind: "query", statements: [sql] })))
-    throw new BoardQueryError("Not sent: the query was cancelled.", "declined");
+    throw new BoardQueryError("Not sent: the query was canceled.", "declined");
   return ipc.metrics.run(
     q.connectionId,
     q.queryId,

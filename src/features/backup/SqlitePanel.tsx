@@ -65,12 +65,12 @@ export function SqlitePanel({
   };
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-8 py-10 text-center">
-      <Database className="text-muted-foreground size-8" />
+      <Database aria-hidden className="text-muted-foreground size-6" />
       <div className="flex max-w-md flex-col gap-1">
         <p className="text-sm font-medium">
           {mode === "backup"
-            ? "SQLite databases are backed up by copying the database file."
-            : "SQLite databases are restored by replacing the database file."}
+            ? "SQLite databases are backed up by copying the database file"
+            : "SQLite databases are restored by replacing the database file"}
         </p>
         <p className="text-muted-foreground text-xs">
           {mode === "backup"
@@ -78,16 +78,16 @@ export function SqlitePanel({
             : "Close the connection, then copy the backup over the database file (or open the copy as a new connection)."}
         </p>
         {file && (
-          <p className="text-muted-foreground font-mono text-[11px] break-all" title={file}>
+          <p className="text-muted-foreground font-mono text-xs break-all" title={file}>
             {overSsh && profile.ssh ? `${profile.ssh.host}:${file}` : file}
           </p>
         )}
         {overSsh && mode === "backup" && (
           <p
             role="note"
-            className="text-muted-foreground mt-1 flex items-start gap-1.5 text-left text-[11px]"
+            className="text-muted-foreground mt-1 flex items-start gap-1.5 text-left text-xs"
           >
-            <TriangleAlert className="text-warning mt-0.5 size-3 shrink-0" />
+            <TriangleAlert aria-hidden className="text-warning mt-px size-3.5 shrink-0" />
             {cached
               ? "This database is on an SSH server. Copying it backs up the cached copy Tabler downloaded when the connection was opened: changes made on the server since then are not in it. Download a fresh copy first to include them."
               : "This database is on an SSH server. Its file is downloaded for the backup, over SFTP."}
@@ -119,7 +119,7 @@ export function SqlitePanel({
         )}
         {onChooseOther && (
           <Button type="button" variant="outline" size="sm" onClick={onChooseOther}>
-            Choose another connection
+            Choose Another Connection
           </Button>
         )}
       </div>

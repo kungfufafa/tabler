@@ -11,7 +11,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { toast } from "sonner";
-import { Kbd } from "@/components/Kbd";
+import { KbdHint } from "@/components/KbdHint";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -92,6 +92,11 @@ async function runOne(connectionId: string, table: TableRef | null, op: DdlOp): 
 
 function qualified(t: TableRef): string {
   return t.schema ? `${t.schema}.${t.name}` : t.name;
+}
+
+/** "Materialized view" → "Materialized View", for buttons and window titles. */
+function titleCase(s: string): string {
+  return s.replace(/(^|\s)(\p{Ll})/gu, (_, space: string, c: string) => space + c.toUpperCase());
 }
 
 function ErrorLine({ error }: { error: DdlErrorInfo | null }) {
@@ -259,18 +264,18 @@ export function CreateTableDialog({
   };
   const comments = supportsComments(dialect);
   const errors = submitted && !result.ok ? result.errors : [];
-  const cell = "h-7 rounded-sm px-1.5 text-xs md:text-xs";
+  const cell = "h-7 rounded-md px-1.5 text-xs md:text-xs";
 
   return (
     // While CREATE runs, Esc / the overlay / the close button must not dismiss the dialog: its
     // outcome (an error to show, or the new table's tab) would land in a closed dialog.
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent
-        className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(48rem,calc(100%-2rem))]"
+        className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(48rem,calc(100%-2rem))]"
         onKeyDown={onKeyDown}
       >
         <DialogHeader>
-          <DialogTitle className="text-sm">New table</DialogTitle>
+          <DialogTitle className="text-sm">New Table</DialogTitle>
           <DialogDescription className="text-xs">
             {schema ? (
               <>
@@ -287,7 +292,7 @@ export function CreateTableDialog({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="new_table"
-            className="h-7 font-mono text-xs md:text-xs"
+            className="h-7 rounded-md font-mono text-xs md:text-xs"
             spellCheck={false}
             autoComplete="off"
           />
@@ -310,7 +315,7 @@ export function CreateTableDialog({
               <col className="w-20" />
             </colgroup>
             <thead>
-              <tr className="text-muted-foreground [&>th]:bg-surface-2 h-7 text-left text-[11px] [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:shadow-[inset_0_-1px_0_var(--color-border)]">
+              <tr className="text-muted-foreground [&>th]:bg-surface-2 h-7 text-left text-xs [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:shadow-[inset_0_-1px_0_var(--color-border)]">
                 <th className="px-2 font-medium">Name</th>
                 <th className="px-2 font-medium">Type</th>
                 <th className="px-1 text-center font-medium">Nullable</th>
@@ -357,7 +362,7 @@ export function CreateTableDialog({
                       checked={r.nullable && !r.primaryKey}
                       disabled={r.primaryKey}
                       onCheckedChange={(v) => update(r.id, { nullable: v === true })}
-                      className="mx-auto size-3.5"
+                      className="mx-auto"
                     />
                   </td>
                   <td className="px-1">
@@ -376,7 +381,7 @@ export function CreateTableDialog({
                       aria-label={`Column ${i + 1} primary key`}
                       checked={r.primaryKey}
                       onCheckedChange={(v) => update(r.id, { primaryKey: v === true })}
-                      className="mx-auto size-3.5"
+                      className="mx-auto"
                     />
                   </td>
                   <td className="px-1 text-center">
@@ -384,7 +389,7 @@ export function CreateTableDialog({
                       aria-label={`Column ${i + 1} auto increment`}
                       checked={r.autoIncrement}
                       onCheckedChange={(v) => update(r.id, { autoIncrement: v === true })}
-                      className="mx-auto size-3.5"
+                      className="mx-auto"
                     />
                   </td>
                   {comments && (
@@ -427,10 +432,7 @@ export function CreateTableDialog({
               ))}
               {rows.length === 0 && (
                 <tr>
-                  <td
-                    colSpan={8}
-                    className="text-muted-foreground px-3 py-3 text-center text-[11px] italic"
-                  >
+                  <td colSpan={8} className="text-muted-foreground py-6 text-center text-xs">
                     No columns yet
                   </td>
                 </tr>
@@ -440,7 +442,7 @@ export function CreateTableDialog({
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="xs" onClick={addRow}>
-            <Plus /> Add column
+            <Plus /> Add Column
           </Button>
           <span className="flex-1" />
           <Button
@@ -449,7 +451,12 @@ export function CreateTableDialog({
             aria-expanded={showSql}
             onClick={() => setShowSql((v) => !v)}
           >
-            <ChevronRight className={cn("transition-transform", showSql && "rotate-90")} />
+            <ChevronRight
+              className={cn(
+                "transition-transform duration-150 motion-reduce:transition-none",
+                showSql && "rotate-90",
+              )}
+            />
             Preview SQL
           </Button>
         </div>
@@ -457,11 +464,11 @@ export function CreateTableDialog({
           <div className="border-border bg-surface-2 max-h-48 min-h-12 overflow-auto rounded-md border px-3 py-2">
             {!result.ok ? (
               errors.length > 0 ? (
-                <p className="text-muted-foreground text-[11px]">
+                <p className="text-muted-foreground text-xs">
                   Fix the problems below to see the SQL.
                 </p>
               ) : (
-                <div className="flex flex-col gap-0.5 text-[11px]">
+                <div className="flex flex-col gap-0.5 text-xs">
                   <p className="text-muted-foreground">Fix these problems to see the SQL:</p>
                   <ul className="text-error flex flex-col gap-0.5">
                     {result.errors.map((e) => (
@@ -476,7 +483,7 @@ export function CreateTableDialog({
               <>
                 <SqlBlock sql={preview.data.statements.join(";\n\n")} dialect={dialect} />
                 {preview.data.warnings.map((w, i) => (
-                  <p key={i} className="text-warning mt-1 text-[11px]">
+                  <p key={i} className="text-warning mt-1 text-xs">
                     {w}
                   </p>
                 ))}
@@ -487,7 +494,7 @@ export function CreateTableDialog({
           </div>
         )}
         {errors.length > 0 && (
-          <ul role="alert" className="text-error flex flex-col gap-0.5 text-[11px]">
+          <ul role="alert" className="text-error flex flex-col gap-0.5 text-xs">
             {errors.map((e) => (
               <li key={e}>{e}</li>
             ))}
@@ -495,15 +502,12 @@ export function CreateTableDialog({
         )}
         <ErrorLine error={error} />
         <DialogFooter className="items-center">
-          <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={busy}>
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={busy}>
             Cancel
           </Button>
           <Button size="sm" onClick={() => void create()} disabled={busy}>
-            Create table
-            <Kbd
-              combo="Mod+Enter"
-              className="border-primary-foreground/30 ml-1 bg-transparent text-inherit"
-            />
+            Create Table
+            <KbdHint combo="Mod+Enter" />
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -552,10 +556,10 @@ export function RenameTableDialog({
   return (
     <Dialog open onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent className="sm:max-w-md">
-        <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-3">
+        <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle className="text-sm">
-              Rename {KIND_LABEL[table.kind].toLowerCase()}
+              Rename {titleCase(KIND_LABEL[table.kind])}
             </DialogTitle>
             <DialogDescription className="font-mono text-xs">{qualified(ref)}</DialogDescription>
           </DialogHeader>
@@ -566,7 +570,7 @@ export function RenameTableDialog({
               value={name}
               onChange={(e) => setName(e.target.value)}
               onFocus={(e) => e.currentTarget.select()}
-              className="h-7 font-mono text-xs md:text-xs"
+              className="h-7 rounded-md font-mono text-xs md:text-xs"
               spellCheck={false}
               autoComplete="off"
             />
@@ -575,7 +579,7 @@ export function RenameTableDialog({
           <DialogFooter>
             <Button
               type="button"
-              variant="ghost"
+              variant="outline"
               size="sm"
               onClick={() => onOpenChange(false)}
               disabled={busy}
@@ -630,14 +634,14 @@ export function TruncateTableDialog({
     <AlertDialog open onOpenChange={(o) => !busy && onOpenChange(o)}>
       <AlertDialogContent className="data-[size=default]:sm:max-w-md">
         <AlertDialogHeader>
-          <AlertDialogTitle className="text-sm">Truncate {table.name}?</AlertDialogTitle>
+          <AlertDialogTitle className="text-sm">Truncate “{table.name}”?</AlertDialogTitle>
           <AlertDialogDescription className="text-xs">
             Every row of <span className="font-mono">{qualified(ref)}</span> is deleted. This cannot
             be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {dialect === "postgres" && (
-          <label className="flex items-center gap-2 text-xs">
+          <label className="flex h-7 items-center gap-2 text-xs">
             <Checkbox
               checked={restartIdentity}
               onCheckedChange={(v) => setRestartIdentity(v === true)}
@@ -725,7 +729,7 @@ export function DropTableDialog({
         >
           <AlertDialogHeader>
             <AlertDialogTitle className="text-sm">
-              Drop {what} {table.name}?
+              Drop {what} “{table.name}”?
             </AlertDialogTitle>
             <AlertDialogDescription className="text-xs">
               <span className="font-mono">{qualified(ref)}</span>
@@ -740,13 +744,13 @@ export function DropTableDialog({
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
               placeholder={table.name}
-              className="h-7 font-mono text-xs md:text-xs"
+              className="h-7 rounded-md font-mono text-xs md:text-xs"
               spellCheck={false}
               autoComplete="off"
             />
           </Field>
           {dialect === "postgres" && (
-            <label className="flex items-center gap-2 text-xs">
+            <label className="flex h-7 items-center gap-2 text-xs">
               <Checkbox checked={cascade} onCheckedChange={(v) => setCascade(v === true)} />
               CASCADE (also drop objects that depend on it)
             </label>
@@ -757,7 +761,7 @@ export function DropTableDialog({
               Cancel
             </AlertDialogCancel>
             <Button type="submit" variant="destructive" size="sm" disabled={!confirmed || busy}>
-              Drop {what}
+              Drop {titleCase(what)}
             </Button>
           </AlertDialogFooter>
         </form>

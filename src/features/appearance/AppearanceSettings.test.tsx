@@ -115,7 +115,7 @@ describe("AppearanceSettings", () => {
     fireEvent.change(text, { target: { value: "#0f0" } });
     fireEvent.blur(text);
     expect(getPrefs().colorOverrides.light?.["editor-statement-bg"]).toBe("#00ff00");
-    const picker = screen.getByLabelText("Current query colour picker");
+    const picker = screen.getByLabelText("Current query color picker");
     fireEvent.change(picker, { target: { value: "#112233" } });
     // The Light theme's tint is translucent (6%); a picked colour keeps that.
     expect(getPrefs().colorOverrides.light?.["editor-statement-bg"]).toBe("#112233");
@@ -127,7 +127,7 @@ describe("AppearanceSettings", () => {
       light: { "syn-comment": "#111111", "syn-number": "#222222", "change-new": "#333333" },
     });
     render(<AppearanceSettings />);
-    const resets = screen.getAllByRole("button", { name: "Reset to theme default" });
+    const resets = screen.getAllByRole("button", { name: "Reset to Theme Default" });
     expect(resets).toHaveLength(2);
     await user.click(resets[0]!);
     // The editor group's colours are gone; the data table's stay.
@@ -296,7 +296,7 @@ describe("AppearanceSettings", () => {
     await user.clear(name);
     await user.type(name, "Paper");
     await user.click(within(dialog).getByRole("radio", { name: "Dark" }));
-    await user.click(within(dialog).getByRole("button", { name: "Save Theme" }));
+    await user.click(within(dialog).getByRole("button", { name: /^Save Theme/ }));
 
     expect(screen.queryByRole("dialog", { name: "New Theme" })).not.toBeInTheDocument();
     const [saved] = useThemes.getState().themes;
@@ -311,7 +311,7 @@ describe("AppearanceSettings", () => {
     await user.click(screen.getByRole("button", { name: "New Theme…" }));
     const dialog = await screen.findByRole("dialog", { name: "New Theme" });
     await user.clear(within(dialog).getByLabelText("Name"));
-    expect(within(dialog).getByRole("button", { name: "Save Theme" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: /^Save Theme/ })).toBeDisabled();
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(useThemes.getState().themes).toEqual([]);
     expect(useUiStore.getState().themePref).toBe("light");
@@ -339,7 +339,7 @@ describe("AppearanceSettings", () => {
     expect(hexOf(surface)).toBe("#0a0a0a");
     await user.clear(surface);
     await user.type(surface, "#202020{Enter}");
-    await user.click(within(dialog).getByRole("button", { name: "Save Theme" }));
+    await user.click(within(dialog).getByRole("button", { name: /^Save Theme/ }));
     expect(useThemes.getState().themes[0]!.tokens.surface).toBe("#202020");
     expect(useThemes.getState().themes).toHaveLength(1);
   });
@@ -348,7 +348,7 @@ describe("AppearanceSettings", () => {
     const user = userEvent.setup();
     useUiStore.setState({ themePref: "dark" });
     render(<AppearanceSettings />);
-    await user.click(screen.getByRole("button", { name: "Duplicate" }));
+    await user.click(screen.getByRole("button", { name: "Duplicate…" }));
     const dialog = await screen.findByRole("dialog", { name: "Duplicate Theme" });
     expect(within(dialog).getByLabelText("Name")).toHaveValue("Dark copy");
   });

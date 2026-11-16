@@ -274,7 +274,7 @@ export async function startJob(args: StartJobArgs): Promise<BackupJobResult | nu
       void notifyInBackground({ title: `${what} of ${database} failed`, body: e.message });
     if (e.code === "CANCELLED") {
       useBackupStore.setState((s) => (s.run?.jobId === jobId ? { run: null } : s));
-      toast.message(`${what} cancelled`, {
+      toast.message(`${what} canceled`, {
         description: mode === "backup" ? "The partial file was removed." : undefined,
       });
     } else if (isOpen()) {
@@ -286,7 +286,12 @@ export async function startJob(args: StartJobArgs): Promise<BackupJobResult | nu
       }));
     } else {
       useBackupStore.setState((s) => (s.run?.jobId === jobId ? { run: null } : s));
-      toast.error(`${what} failed`, { description: e.message });
+      toast.error(
+        mode === "backup" ? "Could not back up the database" : "Could not restore the database",
+        {
+          description: e.message,
+        },
+      );
     }
     return null;
   }

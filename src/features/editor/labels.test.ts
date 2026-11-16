@@ -32,7 +32,7 @@ describe("runSummaryText", () => {
       "2 statements · 1 error · 12 ms",
     );
     expect(runSummaryText(summary({ cancelled: true, totalMs: 1200 }), 40)).toBe(
-      "Cancelled · 40 rows · 1.20 s",
+      "Canceled · 40 rows · 1.20 s",
     );
     expect(runSummaryText(summary({ totalMs: null }), null)).toBe("1 statement");
   });

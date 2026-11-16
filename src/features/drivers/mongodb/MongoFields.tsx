@@ -86,7 +86,7 @@ export function MongoFields({ form }: KindFieldsProps) {
     label: string,
     placeholder: string,
     hint?: string,
-    className = "font-mono",
+    className = "font-mono text-sm",
   ) => (
     <Row label={label} htmlFor={`${uid}-${key}`} error={errors?.[key]?.message} hint={hint}>
       <Input
@@ -114,7 +114,7 @@ export function MongoFields({ form }: KindFieldsProps) {
             onBlur: (e: { target: { value: unknown } }) => takeCredentials(String(e.target.value)),
           })}
           placeholder="mongodb+srv://cluster0.example.mongodb.net/?retryWrites=true"
-          className="font-mono"
+          className="font-mono text-sm"
           autoComplete="off"
           spellCheck={false}
         />
@@ -135,7 +135,7 @@ export function MongoFields({ form }: KindFieldsProps) {
         "auto",
         "Automatic: one host without a replica set name is reached directly, as mongosh does",
       )}
-      {text("appName", "App name", "Tabler", undefined, "")}
+      {text("appName", "App name", "Tabler", undefined, "text-sm")}
       {text("serverSelectionTimeoutSecs", "Selection timeout", "seconds (the connect timeout)")}
       {text("sampleSize", "Sample size", "100", "Documents read to find a collection's fields")}
     </>

@@ -16,7 +16,7 @@ describe("FilterConfirmDialog", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
-  it("shows the table, the connection and the SQL, and Apply filter answers yes", async () => {
+  it("shows the table, the connection and the SQL, and Apply Filter answers yes", async () => {
     render(<FilterConfirmDialog />);
     let answer: Promise<boolean>;
     act(() => {
@@ -28,18 +28,18 @@ describe("FilterConfirmDialog", () => {
     expect(screen.getByTestId("filter-confirm-sql")).toHaveTextContent(
       "total > 100 AND status = 'paid'",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Apply filter" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply Filter" }));
     await expect(answer!).resolves.toBe(true);
     expect(useDeepLinkStore.getState().filterRequests).toEqual([]);
   });
 
-  it("Not now and Escape answer no", async () => {
+  it("Not Now and Escape answer no", async () => {
     render(<FilterConfirmDialog />);
     let first: Promise<boolean>;
     act(() => {
       first = ask();
     });
-    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    fireEvent.click(screen.getByRole("button", { name: "Not Now" }));
     await expect(first!).resolves.toBe(false);
 
     let second: Promise<boolean>;
@@ -60,10 +60,10 @@ describe("FilterConfirmDialog", () => {
       b = ask("b = 2", "public.b");
     });
     expect(screen.getByTestId("filter-confirm-sql")).toHaveTextContent("a = 1");
-    fireEvent.click(screen.getByRole("button", { name: "Apply filter" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply Filter" }));
     await expect(a!).resolves.toBe(true);
     expect(await screen.findByText("b = 2")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    fireEvent.click(screen.getByRole("button", { name: "Not Now" }));
     await expect(b!).resolves.toBe(false);
   });
 });

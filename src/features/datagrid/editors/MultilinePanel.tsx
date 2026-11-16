@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { formatCombo } from "@/lib/keys/combo";
+import { Kbd } from "@/components/Kbd";
 import { cn } from "@/lib/utils";
 import type { EditorExit } from "./registry";
 import { commitTabSoon, isSaveKey } from "./saveKey";
@@ -113,13 +113,17 @@ export function MultilinePanel({
       />
       <div
         className={cn(
-          "border-border bg-surface-2 flex shrink-0 items-center truncate border-t px-2 text-[11px]",
+          "border-border bg-surface-2 flex shrink-0 items-center truncate border-t px-2 text-xs",
           error ? "text-error" : "text-muted-foreground",
         )}
         style={{ height: FOOTER_H }}
       >
-        {error ??
-          `${formatCombo("Enter")} save · ${formatCombo("Alt+Enter")} new line · esc cancel`}
+        {error ?? (
+          <span className="flex items-center gap-1 whitespace-nowrap">
+            <Kbd combo="Enter" /> save · <Kbd combo="Alt+Enter" /> new line · <Kbd combo="Escape" />{" "}
+            cancel
+          </span>
+        )}
       </div>
     </div>,
     document.body,

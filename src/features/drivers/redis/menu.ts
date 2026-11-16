@@ -77,7 +77,7 @@ export function redisObjectMenu(item: SidebarItemRef, ctx: ObjectMenuContext): O
       label: "Slow Log",
       run: async () => {
         const entries = await read<RedisSlowEntry[]>("slowLog", { count: 128 });
-        await ask({ title: "Slow log", command: slowLogText(entries), confirmLabel: "Done" });
+        await ask({ title: "Slow Log", command: slowLogText(entries), confirmLabel: "Done" });
       },
     },
     {
@@ -120,7 +120,7 @@ export function redisObjectMenu(item: SidebarItemRef, ctx: ObjectMenuContext): O
           return;
         }
         ctx.refresh();
-        toast.success(`db${db} flushed`);
+        toast.success(`Flushed db${db}`);
       },
     },
   ];

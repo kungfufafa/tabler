@@ -64,14 +64,14 @@ export function ConnectionUrlDialog({
       >
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>New connection from URL</DialogTitle>
-            <DialogDescription>
+            <DialogTitle className="text-sm">New Connection from URL</DialogTitle>
+            <DialogDescription className="text-xs">
               Paste a postgres://, mysql://, mariadb:// or sqlite:// URL (over SSH:
               postgresql+ssh://sshuser@sshhost/user@host/db). You can review it before saving; the
               passwords go to the Keychain.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-1">
             <Input
               aria-label="Connection URL"
               aria-invalid={error !== null}
@@ -82,19 +82,19 @@ export function ConnectionUrlDialog({
                 setError(null);
               }}
               placeholder="postgresql://user:password@127.0.0.1:5432/database"
-              className="font-mono"
+              className="font-mono text-sm"
               autoComplete="off"
               spellCheck={false}
               autoFocus
             />
             {error && (
-              <p id={`${id}-error`} role="alert" className="text-error text-[11px]">
+              <p id={`${id}-error`} role="alert" className="text-error text-xs leading-4">
                 {error}
               </p>
             )}
           </div>
           <DialogFooter>
-            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={text.trim() === ""}>

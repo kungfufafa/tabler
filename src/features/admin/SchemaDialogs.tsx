@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState, type FormEvent } from "react";
 import { toast } from "sonner";
+import { FormField } from "@/components/FormField";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -26,7 +27,7 @@ import { ipc } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { nameError } from "./databaseForm";
 import { adminKeys } from "./keys";
-import { ErrorLine, Field, NativeSelect } from "./parts";
+import { ErrorLine, NativeSelect } from "./parts";
 import { runAdminDdl, type AdminErrorInfo } from "./run";
 
 /** New Schema… (PostgreSQL): name and an optional owner (`AUTHORIZATION`). */
@@ -87,49 +88,53 @@ export function CreateSchemaDialog({
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
       <DialogContent className="sm:max-w-[34rem]">
-        <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-3">
+        <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle className="text-sm">New Schema</DialogTitle>
             <DialogDescription className="text-xs">
               Created in the database this connection is using.
             </DialogDescription>
           </DialogHeader>
-          <Field
-            label="Name"
-            htmlFor={`${id}-name`}
-            hint={submitted && problem ? <span className="text-error">{problem}</span> : null}
-          >
-            <Input
-              id={`${id}-name`}
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="new_schema"
-              className="h-7 font-mono text-xs md:text-xs"
-              spellCheck={false}
-              autoComplete="off"
-            />
-          </Field>
-          <Field label="Owner (optional)" htmlFor={`${id}-owner`}>
-            <Input
-              id={`${id}-owner`}
-              value={owner}
-              list={`${id}-roles`}
-              onChange={(e) => setOwner(e.target.value)}
-              placeholder={currentUser ?? "current user"}
-              className="h-7 font-mono text-xs md:text-xs"
-              spellCheck={false}
-              autoComplete="off"
-            />
-            <datalist id={`${id}-roles`}>
-              {(roles.data ?? []).map((r) => (
-                <option key={r.name} value={r.name} />
-              ))}
-            </datalist>
-          </Field>
-          <ErrorLine error={error} />
+          <div className="flex flex-col gap-3">
+            <FormField
+              label="Name"
+              htmlFor={`${id}-name`}
+              error={submitted && problem ? problem : null}
+            >
+              <Input
+                id={`${id}-name`}
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="new_schema"
+                aria-invalid={submitted && problem !== null}
+                aria-describedby={submitted && problem ? `${id}-name-error` : undefined}
+                className="h-7 rounded-md font-mono text-xs md:text-xs"
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </FormField>
+            <FormField label="Owner" htmlFor={`${id}-owner`}>
+              <Input
+                id={`${id}-owner`}
+                value={owner}
+                list={`${id}-roles`}
+                onChange={(e) => setOwner(e.target.value)}
+                placeholder={currentUser ? `Optional, e.g. ${currentUser}` : "Optional"}
+                className="h-7 rounded-md font-mono text-xs md:text-xs"
+                spellCheck={false}
+                autoComplete="off"
+              />
+              <datalist id={`${id}-roles`}>
+                {(roles.data ?? []).map((r) => (
+                  <option key={r.name} value={r.name} />
+                ))}
+              </datalist>
+            </FormField>
+            <ErrorLine error={error} />
+          </div>
           <DialogFooter>
-            <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy}>
+            <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={busy}>
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy}>
@@ -182,7 +187,7 @@ export function DropSchemaDialog({
       <AlertDialogContent className="data-[size=default]:sm:max-w-md">
         <AlertDialogHeader>
           <AlertDialogTitle className="text-sm">
-            {target ? `Drop schema ${target}?` : "Drop Schema"}
+            {target ? `Drop schema “${target}”?` : "Drop schema?"}
           </AlertDialogTitle>
           <AlertDialogDescription className="text-xs">
             {cascade
@@ -192,7 +197,7 @@ export function DropSchemaDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         {schema === null && (
-          <Field label="Schema" htmlFor={`${id}-schema`}>
+          <FormField label="Schema" htmlFor={`${id}-schema`}>
             <NativeSelect
               id={`${id}-schema`}
               value={picked}
@@ -207,9 +212,9 @@ export function DropSchemaDialog({
                 </option>
               ))}
             </NativeSelect>
-          </Field>
+          </FormField>
         )}
-        <label className="flex items-center gap-2 text-xs">
+        <label className="flex h-7 items-center gap-2 text-xs">
           <Checkbox checked={cascade} onCheckedChange={(v) => setCascade(v === true)} />
           CASCADE (also drop every object in the schema)
         </label>

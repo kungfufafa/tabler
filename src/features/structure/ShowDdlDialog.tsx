@@ -1,3 +1,4 @@
+import { FormError } from "@/components/FormError";
 import { QuietStatus } from "@/components/QuietLoading";
 import { useQuery } from "@tanstack/react-query";
 import { Copy, SquareTerminal } from "lucide-react";
@@ -71,7 +72,7 @@ export function ShowDdlDialog({
           returnFocus();
         }}
       >
-        <DialogHeader className="border-border border-b px-4 py-3">
+        <DialogHeader className="gap-1 border-b px-4 py-3 pr-12">
           <DialogTitle className="font-mono text-sm">
             {table.schema ? `${table.schema}.` : ""}
             {table.name}
@@ -84,18 +85,20 @@ export function ShowDdlDialog({
           {ddl.isPending ? (
             <QuietStatus />
           ) : ddl.isError ? (
-            <p className="text-error text-xs">{ddl.error.message}</p>
+            <FormError>{ddl.error.message}</FormError>
           ) : (
             <SqlBlock sql={ddl.data} dialect={dialect} />
           )}
         </div>
-        <DialogFooter className="m-0 rounded-b-xl px-4 py-2.5">
-          <Button variant="outline" size="sm" onClick={openInEditor} disabled={!ddl.data}>
-            <SquareTerminal /> Open in SQL Editor
-          </Button>
-          <Button variant="outline" size="sm" onClick={copy} disabled={!ddl.data}>
-            <Copy /> Copy
-          </Button>
+        <DialogFooter className="m-0 items-center">
+          <div className="flex gap-2 sm:mr-auto">
+            <Button variant="outline" size="sm" onClick={openInEditor} disabled={!ddl.data}>
+              <SquareTerminal /> Open in SQL Editor
+            </Button>
+            <Button variant="outline" size="sm" onClick={copy} disabled={!ddl.data}>
+              <Copy /> Copy
+            </Button>
+          </div>
           <DialogClose asChild>
             <Button size="sm">Done</Button>
           </DialogClose>

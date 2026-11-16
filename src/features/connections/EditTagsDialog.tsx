@@ -1,6 +1,7 @@
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { FormError } from "@/components/FormError";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -50,7 +51,7 @@ function Swatch({
       className={cn(
         "ring-offset-background size-3.5 shrink-0 rounded-full ring-offset-1 outline-none",
         "focus-visible:ring-ring focus-visible:ring-2 disabled:cursor-default",
-        selected ? "ring-foreground/60 ring-2" : onClick && "hover:scale-110",
+        selected ? "ring-foreground/60 ring-2" : onClick && "hover:ring-foreground/25 hover:ring-2",
       )}
       style={{ background: cssColor(color) }}
     />
@@ -133,34 +134,38 @@ export function EditTagsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-3 sm:max-w-[34rem]">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-[34rem]">
         <DialogHeader>
-          <DialogTitle>Edit Tags</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-sm">Edit Tags</DialogTitle>
+          <DialogDescription className="text-xs">
             Tags mark a connection&rsquo;s environment in the list and the status bar. Renaming a
             tag renames it on its connections.
           </DialogDescription>
         </DialogHeader>
         <form
-          className="flex min-h-0 flex-col gap-3"
+          className="flex min-h-0 flex-col gap-4"
           onSubmit={(e) => {
             e.preventDefault();
             void submit();
           }}
         >
-          <ul aria-label="Tags" className="flex min-h-0 flex-col gap-1.5 overflow-y-auto">
+          <ul aria-label="Tags" className="flex min-h-0 flex-col gap-1 overflow-y-auto">
             {CONNECTION_TAGS.map((t) => (
-              <li key={t} className="flex h-8 items-center gap-2.5 px-1">
+              <li key={t} className="flex h-7 items-center gap-2.5 px-1">
                 <Swatch color={TAG_COLOR[t]} selected={false} label={TAG_COLOR[t]} />
-                <span className="text-sm">{TAG_LABEL[t]}</span>
-                <span className="text-muted-foreground ml-auto text-[11px]">Built-in</span>
+                <span className="text-xs">{TAG_LABEL[t]}</span>
+                <span className="text-muted-foreground ml-auto text-xs">Built-in</span>
               </li>
             ))}
             {rows.map((r) => {
               const count = r.original ? (uses.get(r.original.toLowerCase()) ?? 0) : 0;
               const hex = HEX_COLOR.test(r.color);
               return (
-                <li key={r.key} className="flex items-center gap-2 px-1" data-testid="custom-tag">
+                <li
+                  key={r.key}
+                  className="flex h-7 items-center gap-2.5 px-1"
+                  data-testid="custom-tag"
+                >
                   <Input
                     id={`${uid}-${r.key}`}
                     value={r.name}
@@ -168,11 +173,11 @@ export function EditTagsDialog({
                     onChange={(e) => update(r.key, { name: e.target.value })}
                     placeholder="Tag name"
                     aria-label="Tag name"
-                    className="h-7 min-w-0 flex-1 text-sm"
+                    className="h-7 min-w-0 flex-1 rounded-md text-xs md:text-xs"
                   />
                   <div
                     role="radiogroup"
-                    aria-label={`Colour of ${r.name || "the new tag"}`}
+                    aria-label={`Color of ${r.name || "the new tag"}`}
                     className="flex shrink-0 items-center gap-1"
                   >
                     {ACCENT_PRESETS.map((c) => (
@@ -186,8 +191,8 @@ export function EditTagsDialog({
                     ))}
                     <input
                       type="color"
-                      aria-label="Other colour"
-                      title="Other colour"
+                      aria-label="Other color"
+                      title="Other color"
                       value={hex ? r.color : "#888888"}
                       onChange={(e) => update(r.key, { color: e.target.value })}
                       className={cn(
@@ -197,7 +202,7 @@ export function EditTagsDialog({
                     />
                   </div>
                   <span
-                    className="text-muted-foreground w-14 shrink-0 text-right text-[11px] tabular-nums"
+                    className="text-muted-foreground w-14 shrink-0 text-right text-xs tabular-nums"
                     title={`${count} connection${count === 1 ? "" : "s"} use this tag`}
                   >
                     {count > 0 ? `${count} used` : ""}
@@ -205,13 +210,13 @@ export function EditTagsDialog({
                   <Button
                     type="button"
                     variant="ghost"
-                    size="icon"
-                    className="size-7 shrink-0"
+                    size="icon-sm"
+                    className="shrink-0"
                     aria-label={`Delete ${r.name || "tag"}`}
                     title={count > 0 ? "Delete (its connections keep the tag, in gray)" : "Delete"}
                     onClick={() => setRows((rs) => rs.filter((x) => x.key !== r.key))}
                   >
-                    <Trash2 />
+                    <Trash2 aria-hidden />
                   </Button>
                 </li>
               );
@@ -219,23 +224,19 @@ export function EditTagsDialog({
           </ul>
           <div className="flex items-center gap-2">
             <Button type="button" variant="outline" size="sm" onClick={add}>
-              <Plus /> Add Tag
+              <Plus aria-hidden /> Add Tag
             </Button>
-            {error && rows.length > 0 && (
-              <p role="alert" className="text-error min-w-0 truncate text-[11px]">
-                {error}
-              </p>
-            )}
+            {error && rows.length > 0 && <FormError>{error}</FormError>}
             {current &&
               !rows.some((r) => r.name.trim() === current) &&
               !CONNECTION_TAGS.some((t) => t === current) && (
-                <p className="text-muted-foreground min-w-0 truncate text-[11px]">
+                <p className="text-muted-foreground min-w-0 truncate text-xs">
                   This connection&rsquo;s tag &ldquo;{current}&rdquo; is not defined here
                 </p>
               )}
           </div>
           <DialogFooter>
-            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={error !== null || save.isPending}>

@@ -59,11 +59,11 @@ function ConfigDiff({ preview }: { preview: McpConfigPreview }) {
   return (
     <pre
       aria-label="Changes"
-      className="border-border bg-surface selectable max-h-72 overflow-auto rounded-md border py-1 font-mono text-[11px] leading-[1.45]"
+      className="border-border bg-surface selectable max-h-72 overflow-auto rounded-md border py-1 font-mono text-[11.5px] leading-[1.45]"
     >
       {diff.map((line, i) =>
         line.kind === "skip" ? (
-          <div key={i} className="text-muted-foreground px-2 italic">
+          <div key={i} className="text-muted-foreground px-2">
             {`⋯ ${line.count} unchanged line${line.count === 1 ? "" : "s"}`}
           </div>
         ) : (
@@ -186,7 +186,7 @@ export function McpSettings() {
 
   return (
     <>
-      <SettingGroup title="MCP Server">
+      <SettingGroup>
         <SettingRow
           id="pref-mcp-enabled"
           label="Enable MCP server"
@@ -217,7 +217,7 @@ export function McpSettings() {
           description={
             <>
               <span
-                className="selectable text-foreground/90 block font-mono text-[11px] break-all"
+                className="selectable text-foreground block font-mono text-xs break-all"
                 title={data?.commandLine}
               >
                 {data?.commandLine ?? (info.isError ? "Unavailable" : "…")}
@@ -226,7 +226,7 @@ export function McpSettings() {
               History.
               {data?.warning && (
                 <span className="text-warning mt-1 flex items-start gap-1">
-                  <TriangleAlert className="mt-0.5 size-3 shrink-0" />
+                  <TriangleAlert aria-hidden className="mt-0.5 size-3 shrink-0" />
                   {data.warning}
                 </span>
               )}
@@ -245,10 +245,10 @@ export function McpSettings() {
         </SettingRow>
         <div className="flex flex-col gap-2 px-3 py-2.5">
           <div className="flex flex-col gap-0.5">
-            <span id="mcp-install-label" className="text-[13px] leading-5">
+            <span id="mcp-install-label" className="text-sm leading-5">
               Install in
             </span>
-            <span className="text-muted-foreground text-[11px] leading-4">
+            <span className="text-muted-foreground text-xs leading-4">
               {enabled
                 ? "Adds Tabler to the app's MCP servers. Cursor and VS Code (Insiders) show the change to their mcp.json first."
                 : "Turn on the MCP server first."}
@@ -274,14 +274,14 @@ export function McpSettings() {
         </div>
       </SettingGroup>
       <AlertDialog open={preview !== null} onOpenChange={(o) => !o && !writing && setPreview(null)}>
-        <AlertDialogContent className="data-[size=default]:sm:max-w-[min(48rem,calc(100%-2rem))]">
+        <AlertDialogContent className="data-[size=default]:sm:max-w-[34rem]">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-sm">
               {preview && `Add Tabler to ${labelOf(preview.client)}?`}
             </AlertDialogTitle>
             <AlertDialogDescription className="text-xs">
               {preview?.before === null ? "Tabler creates " : "Tabler changes "}
-              <span className="font-mono text-[11px] break-all">{preview?.path}</span>
+              <span className="font-mono break-all">{preview?.path}</span>
               {preview?.before === null
                 ? "."
                 : ". Other servers and settings in the file stay as they are."}

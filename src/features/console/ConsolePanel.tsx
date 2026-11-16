@@ -2,6 +2,7 @@ import { Copy, Trash2, X } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
+import { SectionLabel } from "@/components/SectionLabel";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -29,8 +30,8 @@ import {
 
 const CATEGORY: Record<ConsoleCategory, { label: string; className: string }> = {
   data: { label: "Data", className: "bg-brand-soft text-brand" },
-  structure: { label: "Structure", className: "bg-warning/15 text-warning" },
-  query: { label: "Query", className: "bg-success/15 text-success" },
+  structure: { label: "Structure", className: "bg-warning/10 text-warning" },
+  query: { label: "Query", className: "bg-success/10 text-success" },
 };
 
 /** SQL longer than this starts collapsed. */
@@ -84,7 +85,7 @@ export function ConsolePanel() {
   return (
     <section aria-label="Console" className="bg-surface flex h-full min-h-0 flex-col">
       <div className="border-border flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b px-3 text-xs whitespace-nowrap">
-        <span className="text-muted-foreground font-semibold">Console</span>
+        <SectionLabel as="span">Console</SectionLabel>
         <Select
           value={filter}
           onValueChange={(v) => {
@@ -95,7 +96,7 @@ export function ConsolePanel() {
           <SelectTrigger
             size="sm"
             aria-label="Console filter"
-            className="h-5.5 w-auto min-w-32 gap-1 rounded-md px-2 text-[11px]"
+            className="w-auto min-w-32 gap-1 px-2 text-xs"
           >
             <SelectValue />
           </SelectTrigger>
@@ -187,18 +188,21 @@ const ConsoleRow = memo(function ConsoleRow({ entry }: { entry: ConsoleEntry }) 
   return (
     <div
       data-testid="console-entry"
-      className="group/entry border-border/60 hover:bg-row-hover border-b px-3 py-1.5"
+      className="group/entry border-border hover:bg-row-hover border-b px-3 py-1.5"
     >
-      <div className="text-muted-foreground flex h-5 items-center gap-2 text-[11px]">
+      <div className="text-muted-foreground flex h-5 items-center gap-2 text-xs">
         <time dateTime={new Date(entry.at).toISOString()} className="font-mono tabular-nums">
           {clockTime(entry.at)}
         </time>
         <span
-          className={cn("rounded px-1.5 text-[10px] leading-4 font-medium", category.className)}
+          className={cn(
+            "inline-flex h-4 items-center rounded-sm px-1 text-[10px] leading-none font-medium",
+            category.className,
+          )}
         >
           {category.label}
         </span>
-        {entry.label && <span className="font-mono text-[10px]">{entry.label}</span>}
+        {entry.label && <span className="font-mono">{entry.label}</span>}
         {source && <span className="min-w-0 truncate">{source}</span>}
         <span className="flex-1" />
         {info && <span className="shrink-0 tabular-nums">{info}</span>}
@@ -225,14 +229,14 @@ const ConsoleRow = memo(function ConsoleRow({ entry }: { entry: ConsoleEntry }) 
       {long && (
         <button
           type="button"
-          className="text-muted-foreground hover:text-foreground text-[11px]"
+          className="text-muted-foreground hover:text-foreground text-xs transition-colors"
           onClick={() => setExpanded((v) => !v)}
         >
           {expanded ? "Show less" : "Show more"}
         </button>
       )}
       {entry.error && (
-        <p className="selectable text-error mt-0.5 font-mono text-[11px] break-words whitespace-pre-wrap">
+        <p className="selectable text-error mt-0.5 font-mono text-xs break-words whitespace-pre-wrap">
           {entry.error}
         </p>
       )}

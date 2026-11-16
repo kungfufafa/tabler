@@ -219,7 +219,7 @@ describe("pending item operations", () => {
     expect(within(control()).getByRole("button", { name: "Commit 1 change" })).toBeEnabled();
 
     fireEvent.click(within(control()).getByRole("button", { name: "Preview SQL" }));
-    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
     await waitFor(() => expect(sheet).toHaveTextContent('TRUNCATE TABLE "public"."posts";'));
     fireEvent.click(within(sheet).getByRole("button", { name: /^Commit/ }));
     await waitFor(() => expect(apply).toHaveBeenCalledOnce());
@@ -247,7 +247,7 @@ describe("pending item operations", () => {
     expect(within(control()).getByRole("button", { name: "Commit 2 changes" })).toBeEnabled();
 
     fireEvent.click(within(control()).getByRole("button", { name: "Preview SQL" }));
-    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
     const list = within(sheet).getByRole("region", { name: "Sidebar Item operations" });
     await waitFor(() =>
       expect(list).toHaveTextContent(
@@ -319,7 +319,7 @@ describe("pending item operations", () => {
     // second action, no sheet.
     await act(() => actions.run("grid.commit"));
     await waitFor(() => expect(apply).toHaveBeenCalledOnce());
-    expect(screen.queryByRole("dialog", { name: "Preview changes" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Preview Changes" })).toBeNull();
     // ONE guard for every statement and ONE backend call: structure first, then the operations.
     expect(guardExecution).toHaveBeenCalledOnce();
     expect(guardExecution).toHaveBeenCalledWith(c, {
@@ -362,7 +362,7 @@ describe("pending item operations", () => {
       expect.objectContaining({ description: expect.stringContaining("nosuchtype_x") }),
     );
     // The sheet stays open on the failing tab's statement.
-    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
     expect(within(sheet).getByRole("alert")).toHaveTextContent(/nosuchtype_x" does not exist/);
     expect(within(sheet).getByText("All changes were reverted.")).toBeInTheDocument();
     // ⇧⌘⌫ discards the operation along with the tab's changes.
@@ -456,7 +456,7 @@ describe("pending item operations", () => {
 
     stage();
     await act(() => actions.run("grid.preview"));
-    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
     fireEvent.click(within(sheet).getByRole("button", { name: /^Commit/ }));
     await waitFor(() => expect(apply).toHaveBeenCalledTimes(3));
     expect(toast.message).not.toHaveBeenCalledWith("No structure changes to apply");
@@ -510,7 +510,7 @@ describe("pending item operations", () => {
       stageObjectOp(c, truncate("tags"), [], null);
     });
     fireEvent.click(within(control()).getByRole("button", { name: "Preview SQL" }));
-    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
     fireEvent.click(within(sheet).getByRole("button", { name: /^Commit/ }));
     const remove = await within(sheet).findByRole("button", { name: "Remove truncate of tags" });
     await waitFor(() => expect(remove).toBeDisabled());

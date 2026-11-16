@@ -2,7 +2,7 @@ import { closestCenter, DndContext, useDroppable } from "@dnd-kit/core";
 import { horizontalListSortingStrategy, SortableContext } from "@dnd-kit/sortable";
 import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
-import { Kbd } from "@/components/Kbd";
+import { KbdHint } from "@/components/KbdHint";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { actions } from "@/features/palette/actions";
 import { isTauri } from "@/lib/ipc";
@@ -65,7 +65,7 @@ function BarButton({
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
-      className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring flex size-6 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-1 focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-45"
+      className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring flex size-6 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset disabled:pointer-events-none disabled:opacity-50"
     >
       {children}
     </button>
@@ -77,7 +77,7 @@ function BarButton({
       <TooltipTrigger asChild>{button}</TooltipTrigger>
       <TooltipContent className="flex items-center gap-1.5">
         {label}
-        {combo && <Kbd combo={combo} className="border-border/40 bg-transparent text-inherit" />}
+        {combo && <KbdHint combo={combo} />}
       </TooltipContent>
     </Tooltip>
   );
@@ -194,7 +194,7 @@ export function TabStrip({ group = 0, shared = false }: { group?: TabGroup; shar
             disabled={!backEnabled}
             onClick={back}
           >
-            <ChevronLeft aria-hidden className="size-4" />
+            <ChevronLeft aria-hidden className="size-3.5" />
           </BarButton>
           <BarButton
             label="Forward"
@@ -202,7 +202,7 @@ export function TabStrip({ group = 0, shared = false }: { group?: TabGroup; shar
             disabled={!forwardEnabled}
             onClick={forward}
           >
-            <ChevronRight aria-hidden className="size-4" />
+            <ChevronRight aria-hidden className="size-3.5" />
           </BarButton>
         </div>
       )}
@@ -220,7 +220,7 @@ export function TabStrip({ group = 0, shared = false }: { group?: TabGroup; shar
           disabled={!hasConnection}
           onClick={newQuery}
         >
-          <Plus aria-hidden className="size-4" />
+          <Plus aria-hidden className="size-3.5" />
         </BarButton>
       </div>
     </div>

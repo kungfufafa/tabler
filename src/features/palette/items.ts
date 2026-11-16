@@ -217,7 +217,7 @@ export interface PaletteItem {
    * Disconnect, database switches) so it never becomes the default ↩ target of an empty query.
    */
   noRecent?: boolean;
-  /** Runs with the palette left open ("Load all schemas": the list grows in place). */
+  /** Runs with the palette left open ("Load All Schemas": the list grows in place). */
   keepOpen?: boolean;
   /** Right-click menu of the row (⌘K database list). */
   menu?: PaletteMenuEntry[];
@@ -861,7 +861,7 @@ export function loadAllSchemasItem(ctx: {
   return {
     key: `schemas-load-all:${enc(ctx.profileId)}`,
     group: "schemas",
-    label: "Load all schemas",
+    label: "Load All Schemas",
     meta: `${ctx.notLoaded} not searched`,
     keywords: ["lazy load every schema items search"],
     icon: { type: "action", icon: ListPlus },

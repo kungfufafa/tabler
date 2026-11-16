@@ -15,6 +15,10 @@ import {
 import { useEffect, useId, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { EmptyState } from "@/components/EmptyState";
+import { FormField } from "@/components/FormField";
+import { Kbd } from "@/components/Kbd";
+import { KbdHint } from "@/components/KbdHint";
+import { SectionLabel } from "@/components/SectionLabel";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -33,7 +37,14 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { coreDialect } from "@/features/drivers/catalog";
@@ -47,11 +58,10 @@ import {
   type UserState,
   type UserSummary,
 } from "@/lib/ipc";
-import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { adminKeys } from "./keys";
-import { ErrorLine, Field, NativeSelect } from "./parts";
+import { ErrorLine, NativeSelect } from "./parts";
 import { errorInfo, guarded, type AdminErrorInfo } from "./run";
 import {
   draftOf,
@@ -109,12 +119,10 @@ export function UserManagementDialog({
   return (
     <Dialog open onOpenChange={(open) => !open && setRequestClose((n) => n + 1)}>
       <DialogContent className="flex h-[min(720px,calc(100dvh-4rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(980px,calc(100%-2rem))]">
-        <header className="border-border flex h-11 shrink-0 items-center gap-2 border-b pr-12 pl-4">
-          <DialogTitle className="text-[13px] font-semibold">User Management</DialogTitle>
-          <DialogDescription className="text-muted-foreground truncate text-xs">
-            {connectionName}
-          </DialogDescription>
-        </header>
+        <DialogHeader className="shrink-0 gap-1 border-b px-4 py-3 pr-12">
+          <DialogTitle className="text-sm">User Management</DialogTitle>
+          <DialogDescription className="truncate text-xs">{connectionName}</DialogDescription>
+        </DialogHeader>
         {driver === "sqlite" ? (
           <EmptyCloser requestClose={requestClose} onClose={onClose}>
             <EmptyState
@@ -170,6 +178,7 @@ function UserManagementBody({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const listId = useId();
   const [includeNologin, setIncludeNologin] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ key: string; value: UserDraft } | null>(null);
@@ -296,17 +305,30 @@ function UserManagementBody({
 
   const problems = current ? draftProblems(current, driver) : [];
   const dropTarget = current?.original ?? null;
+  const selectedIndex = list.findIndex((u) => userKey(u) === selectedKey);
+  const activeOption =
+    selectedKey === NEW_KEY
+      ? `${listId}-new`
+      : selectedIndex >= 0
+        ? `${listId}-${selectedIndex}`
+        : undefined;
 
   return (
     <div className="flex min-h-0 flex-1" onKeyDown={onKeyDown}>
       <aside className="border-border bg-sidebar flex w-60 shrink-0 flex-col border-r">
-        <div className="border-border flex h-9 shrink-0 items-center gap-2 border-b px-3">
-          <span className="text-muted-foreground text-[11px] font-semibold tracking-wide uppercase">
-            {driver === "postgres" ? "Roles" : "Users"}
+        <div className="border-border flex h-8 shrink-0 items-center gap-2 border-b px-3 text-xs">
+          <SectionLabel as="span">{driver === "postgres" ? "Roles" : "Users"}</SectionLabel>
+          <span className="text-muted-foreground ml-auto text-xs font-normal tabular-nums">
+            {list.length}
           </span>
-          <span className="text-muted-foreground/70 text-[11px] tabular-nums">{list.length}</span>
         </div>
-        <ul role="listbox" aria-label="Users" className="min-h-0 flex-1 overflow-y-auto py-1">
+        <ul
+          role="listbox"
+          aria-label="Users"
+          tabIndex={0}
+          aria-activedescendant={activeOption}
+          className="focus-visible:ring-ring min-h-0 flex-1 overflow-y-auto py-1 outline-none focus-visible:ring-1 focus-visible:ring-inset"
+        >
           {users.isError && (
             <li className="px-3 py-2">
               <ErrorLine error={errorInfo(users.error)} />
@@ -314,17 +336,19 @@ function UserManagementBody({
           )}
           {selectedKey === NEW_KEY && (
             <li
+              id={`${listId}-new`}
               role="option"
               aria-selected
-              className="bg-brand-soft mx-1 flex h-7 items-center gap-2 rounded-md px-2 text-xs italic"
+              className="bg-brand-soft mx-1 flex h-7 items-center gap-2 rounded-md px-2 text-xs"
             >
-              <UserRound className="text-muted-foreground size-3.5" />
-              {current?.state.name.trim() || "New user"}
+              <UserRound aria-hidden className="text-muted-foreground size-3.5" />
+              {current?.state.name.trim() || <span className="text-null italic">New user</span>}
             </li>
           )}
-          {list.map((u) => (
+          {list.map((u, i) => (
             <UserListItem
               key={userKey(u)}
+              id={`${listId}-${i}`}
               user={u}
               me={isAccount(u, currentUser)}
               selected={userKey(u) === selectedKey}
@@ -337,16 +361,15 @@ function UserManagementBody({
           ))}
         </ul>
         {driver === "postgres" && (
-          <label className="border-border flex h-8 shrink-0 items-center gap-2 border-t px-3 text-[11px]">
+          <label className="border-border flex h-8 shrink-0 items-center gap-2 border-t px-3 text-xs">
             <Checkbox
               checked={includeNologin}
               onCheckedChange={(v) => setIncludeNologin(v === true)}
-              className="size-3.5"
             />
             Show roles that cannot log in
           </label>
         )}
-        <div className="border-border flex h-9 shrink-0 items-center gap-1 border-t px-2">
+        <div className="border-border flex h-8 shrink-0 items-center gap-1 border-t px-2">
           <Button
             variant="ghost"
             size="icon-xs"
@@ -385,8 +408,8 @@ function UserManagementBody({
               description={errorInfo(detail.error).message}
             />
           ) : (
-            <div className="text-muted-foreground flex flex-1 items-center justify-center gap-2 text-xs">
-              <span className="sr-only">Loading…</span>
+            <div className="flex-1">
+              <QuietStatus>Loading the account</QuietStatus>
             </div>
           )
         ) : (
@@ -437,7 +460,7 @@ function UserManagementBody({
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel size="sm">Keep editing</AlertDialogCancel>
+              <AlertDialogCancel size="sm">Keep Editing</AlertDialogCancel>
               <AlertDialogAction
                 size="sm"
                 variant="destructive"
@@ -482,12 +505,14 @@ function UserManagementBody({
 }
 
 function UserListItem({
+  id,
   user,
   me,
   selected,
   onSelect,
   onDrop,
 }: {
+  id: string;
   user: UserSummary;
   me: boolean;
   selected: boolean;
@@ -498,6 +523,7 @@ function UserListItem({
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <li
+          id={id}
           role="option"
           aria-selected={selected}
           onClick={onSelect}
@@ -505,8 +531,8 @@ function UserListItem({
             if (!selected) onSelect();
           }}
           className={cn(
-            "mx-1 flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-xs select-none",
-            selected ? "bg-brand-soft" : "hover:bg-muted/60",
+            "mx-1 flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-xs transition-colors select-none",
+            selected ? "bg-brand-soft" : "hover:bg-row-hover",
           )}
         >
           {user.superuser ? (
@@ -515,17 +541,17 @@ function UserListItem({
               aria-label="Superuser"
             />
           ) : (
-            <UserRound className="text-muted-foreground size-3.5 shrink-0" />
+            <UserRound aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
           )}
           <span className={cn("min-w-0 truncate", !user.canLogin && "text-muted-foreground")}>
-            {user.name || <span className="italic">(anonymous)</span>}
+            {user.name || <span className="text-null italic">(anonymous)</span>}
           </span>
           {user.host !== null && (
             <span className="text-muted-foreground min-w-0 shrink-[2] truncate">@{user.host}</span>
           )}
           {me && (
             <span
-              className="text-brand ml-auto shrink-0 text-[10px] font-medium"
+              className="bg-brand-soft text-brand ml-auto inline-flex h-4 shrink-0 items-center rounded-sm px-1 text-[10px] leading-none font-medium"
               title="This connection's account"
             >
               you
@@ -570,32 +596,32 @@ function UserEditor({
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3">
       <div className={cn("grid gap-3", mysql ? "grid-cols-[1fr_10rem_1fr]" : "grid-cols-2")}>
-        <Field label={mysql ? "User name" : "Role name"} htmlFor={`${id}-name`}>
+        <FormField label={mysql ? "User name" : "Role name"} htmlFor={`${id}-name`}>
           <Input
             id={`${id}-name`}
             autoFocus={draft.original === null}
             value={s.name}
             onChange={(e) => onChange({ ...s, name: e.target.value })}
             placeholder={mysql ? "new_user" : "new_role"}
-            className="h-7 font-mono text-xs md:text-xs"
+            className="h-7 rounded-md font-mono text-xs md:text-xs"
             spellCheck={false}
             autoComplete="off"
           />
-        </Field>
+        </FormField>
         {mysql && (
-          <Field label="Host" htmlFor={`${id}-host`}>
+          <FormField label="Host" htmlFor={`${id}-host`}>
             <Input
               id={`${id}-host`}
               value={s.host ?? ""}
               onChange={(e) => onChange({ ...s, host: e.target.value })}
               placeholder="%"
-              className="h-7 font-mono text-xs md:text-xs"
+              className="h-7 rounded-md font-mono text-xs md:text-xs"
               spellCheck={false}
               autoComplete="off"
             />
-          </Field>
+          </FormField>
         )}
-        <Field label="Password" htmlFor={`${id}-password`}>
+        <FormField label="Password" htmlFor={`${id}-password`}>
           <div className="relative">
             <Input
               id={`${id}-password`}
@@ -603,7 +629,7 @@ function UserEditor({
               value={draft.password ?? ""}
               onChange={(e) => onPassword(e.target.value === "" ? null : e.target.value)}
               placeholder={draft.original ? "Unchanged" : "No password"}
-              className="h-7 pr-7 font-mono text-xs md:text-xs"
+              className="h-7 rounded-md pr-7 font-mono text-xs md:text-xs"
               spellCheck={false}
               autoComplete="new-password"
             />
@@ -611,15 +637,19 @@ function UserEditor({
               type="button"
               aria-label={reveal ? "Hide password" : "Show password"}
               onClick={() => setReveal((v) => !v)}
-              className="text-muted-foreground hover:text-foreground absolute top-1/2 right-1.5 -translate-y-1/2"
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 absolute top-1/2 right-1.5 -translate-y-1/2 rounded-sm transition-colors outline-none focus-visible:ring-2"
             >
-              {reveal ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+              {reveal ? (
+                <EyeOff aria-hidden className="size-3.5" />
+              ) : (
+                <Eye aria-hidden className="size-3.5" />
+              )}
             </button>
           </div>
-        </Field>
+        </FormField>
       </div>
       {isMe && (
-        <p className="text-muted-foreground text-[11px]">
+        <p className="text-muted-foreground text-xs">
           This is the account this connection uses: removing its privileges also limits Tabler.
         </p>
       )}
@@ -703,23 +733,19 @@ function PrivilegeGrid({
     <div className="flex flex-col gap-2" role="group" aria-label={label}>
       <div className="flex items-center gap-1">
         <Button variant="ghost" size="xs" onClick={() => onChange([...all])}>
-          Check all
+          Check All
         </Button>
         <Button variant="ghost" size="xs" onClick={() => onChange([])}>
           None
         </Button>
-        <span className="text-muted-foreground ml-auto text-[11px] tabular-nums">
+        <span className="text-muted-foreground ml-auto text-xs tabular-nums">
           {all.filter((p) => set.has(p)).length} of {all.length}
         </span>
       </div>
       <div className="grid grid-cols-3 gap-x-4 gap-y-1.5">
         {all.map((p) => (
           <label key={p} className="flex items-center gap-2 text-xs">
-            <Checkbox
-              checked={set.has(p)}
-              onCheckedChange={(v) => toggle(p, v === true)}
-              className="size-3.5"
-            />
+            <Checkbox checked={set.has(p)} onCheckedChange={(v) => toggle(p, v === true)} />
             <span className="truncate">{p}</span>
           </label>
         ))}
@@ -754,17 +780,16 @@ function RoleAttributesForm({
             <Checkbox
               checked={attributes[f.key] === true}
               onCheckedChange={(v) => onChange({ ...attributes, [f.key]: v === true })}
-              className="mt-px size-3.5"
             />
-            <span className="flex flex-col">
+            <span className="flex flex-col leading-4">
               {f.label}
-              <span className="text-muted-foreground text-[11px]">{f.hint}</span>
+              <span className="text-muted-foreground text-xs leading-4">{f.hint}</span>
             </span>
           </label>
         ))}
       </div>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Connection limit" htmlFor={`${id}-limit`} hint="-1 = no limit">
+        <FormField label="Connection limit" htmlFor={`${id}-limit`} hint="-1 = no limit">
           <Input
             id={`${id}-limit`}
             type="number"
@@ -777,10 +802,10 @@ function RoleAttributesForm({
                 connectionLimit: e.target.value === "" ? -1 : Number(e.target.value),
               })
             }
-            className="h-7 text-xs tabular-nums md:text-xs"
+            className="h-7 rounded-md text-xs tabular-nums md:text-xs"
           />
-        </Field>
-        <Field
+        </FormField>
+        <FormField
           label="Valid until"
           htmlFor={`${id}-valid`}
           hint="Empty = the password never expires"
@@ -790,11 +815,11 @@ function RoleAttributesForm({
             value={attributes.validUntil ?? ""}
             onChange={(e) => onChange({ ...attributes, validUntil: e.target.value || null })}
             placeholder="2027-12-31 23:59:59+00"
-            className="h-7 font-mono text-xs md:text-xs"
+            className="h-7 rounded-md font-mono text-xs md:text-xs"
             spellCheck={false}
             autoComplete="off"
           />
-        </Field>
+        </FormField>
       </div>
     </div>
   );
@@ -820,7 +845,7 @@ function LimitsForm({
     <div className="flex flex-col gap-3">
       <div className="grid grid-cols-2 gap-3">
         {LIMIT_FIELDS.map((f) => (
-          <Field key={f.key} label={f.label} htmlFor={`${id}-${f.key}`}>
+          <FormField key={f.key} label={f.label} htmlFor={`${id}-${f.key}`}>
             <Input
               id={`${id}-${f.key}`}
               type="number"
@@ -830,12 +855,12 @@ function LimitsForm({
               onChange={(e) =>
                 onChange({ ...limits, [f.key]: e.target.value === "" ? 0 : Number(e.target.value) })
               }
-              className="h-7 text-xs tabular-nums md:text-xs"
+              className="h-7 rounded-md text-xs tabular-nums md:text-xs"
             />
-          </Field>
+          </FormField>
         ))}
       </div>
-      <p className="text-muted-foreground text-[11px]">0 = unlimited.</p>
+      <p className="text-muted-foreground text-xs">0 = unlimited</p>
     </div>
   );
 }
@@ -859,13 +884,13 @@ function TriCheckbox({
       title={state === "some" ? "Granted on some tables only" : undefined}
       onClick={() => onChange(state === "all" ? "none" : "all")}
       className={cn(
-        "border-input focus-visible:ring-ring/50 mx-auto flex size-3.5 items-center justify-center rounded-[4px] border outline-none focus-visible:ring-3",
+        "border-input focus-visible:ring-ring/50 mx-auto flex size-4 items-center justify-center rounded-[4px] border outline-none focus-visible:ring-3",
         state !== "none" && "border-primary bg-primary text-primary-foreground",
         state === "some" && "opacity-70",
       )}
     >
-      {state === "all" && <Check className="size-3" />}
-      {state === "some" && <Minus className="size-3" />}
+      {state === "all" && <Check aria-hidden className="size-3.5" />}
+      {state === "some" && <Minus aria-hidden className="size-3.5" />}
     </button>
   );
 }
@@ -905,7 +930,7 @@ function DatabasePrivileges({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-end gap-3">
-        <Field label="Database" htmlFor={`${id}-db`} className="w-64">
+        <FormField label="Database" htmlFor={`${id}-db`} className="w-64">
           <NativeSelect
             id={`${id}-db`}
             value={database ?? ""}
@@ -920,7 +945,7 @@ function DatabasePrivileges({
               </option>
             ))}
           </NativeSelect>
-        </Field>
+        </FormField>
       </div>
       {database !== null &&
         (mysql ? (
@@ -938,7 +963,7 @@ function DatabasePrivileges({
         ) : (
           <div className="flex gap-4" role="group" aria-label={`Privileges on ${database}`}>
             {PG_DATABASE_PRIVILEGES.map((p) => (
-              <label key={p} className="flex items-center gap-2 text-xs">
+              <label key={p} className="flex h-7 items-center gap-2 text-xs">
                 <Checkbox
                   checked={privilegesOn(state.databasePrivileges, database).includes(p)}
                   onCheckedChange={(v) =>
@@ -953,7 +978,6 @@ function DatabasePrivileges({
                       ),
                     })
                   }
-                  className="size-3.5"
                 />
                 {p}
               </label>
@@ -965,29 +989,34 @@ function DatabasePrivileges({
         (database === currentDatabase ? (
           <SchemaPrivileges state={state} schemas={schemas} onChange={onChange} />
         ) : (
-          <p className="text-muted-foreground text-[11px]">
+          <p className="text-muted-foreground text-xs">
             Schema and table privileges of {database} can be edited while this connection uses it
-            (switch with {formatCombo(shortcutFor("palette.databases") ?? "Mod+K")}).
+            (switch with{" "}
+            <Kbd
+              combo={shortcutFor("palette.databases") ?? "Mod+K"}
+              className="mx-0.5 align-middle"
+            />
+            ).
           </p>
         ))}
       <div className="flex flex-col gap-1">
-        <h4 className="text-muted-foreground text-[11px] font-medium">Granted Privileges</h4>
+        <SectionLabel as="h4">Granted Privileges</SectionLabel>
         {granted.length === 0 ? (
-          <p className="text-muted-foreground/70 text-[11px] italic">None on any database</p>
+          <p className="text-muted-foreground text-xs">None on any database</p>
         ) : (
-          <ul className="border-border divide-border divide-y rounded-md border text-xs">
+          <ul className="border-border divide-border divide-y overflow-hidden rounded-md border text-xs">
             {granted.map((p) => (
               <li key={p.object}>
                 <button
                   type="button"
                   onClick={() => setPicked(p.object)}
                   className={cn(
-                    "hover:bg-muted/50 flex w-full min-w-0 items-baseline gap-2 px-2 py-1 text-left",
+                    "hover:bg-row-hover focus-visible:ring-ring flex h-7 w-full min-w-0 items-center gap-2 px-2 text-left transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset",
                     p.object === database && "bg-brand-soft",
                   )}
                 >
                   <span className="shrink-0 font-mono">{p.object}</span>
-                  <span className="text-muted-foreground truncate text-[11px]">
+                  <span className="text-muted-foreground truncate text-xs">
                     {p.privileges.join(", ")}
                   </span>
                 </button>
@@ -1010,13 +1039,12 @@ function SchemaPrivileges({
   schemas: string[];
   onChange: (state: UserState) => void;
 }) {
-  if (schemas.length === 0)
-    return <p className="text-muted-foreground text-[11px]">This database has no schemas.</p>;
+  if (schemas.length === 0) return <p className="text-muted-foreground text-xs">No schemas</p>;
   return (
     <div className="border-border overflow-auto rounded-md border">
       <table className="w-full border-collapse text-xs">
         <thead>
-          <tr className="text-muted-foreground bg-surface-2 h-7 text-[11px]">
+          <tr className="text-muted-foreground bg-surface-2 h-7 text-xs">
             <th className="px-2 text-left font-medium">Schema</th>
             {PG_SCHEMA_PRIVILEGES.map((p) => (
               <th key={p} className="w-16 px-1 font-medium">
@@ -1055,7 +1083,7 @@ function SchemaPrivileges({
                         ),
                       })
                     }
-                    className="mx-auto size-3.5"
+                    className="mx-auto"
                   />
                 </td>
               ))}
@@ -1072,7 +1100,7 @@ function SchemaPrivileges({
           ))}
         </tbody>
       </table>
-      <p className="text-muted-foreground border-border border-t px-2 py-1 text-[11px]">
+      <p className="text-muted-foreground border-border border-t px-2 py-1 text-xs">
         Table privileges cover the tables and views that exist now (GRANT … ON ALL TABLES IN
         SCHEMA); − = granted on some tables only.
       </p>
@@ -1120,13 +1148,13 @@ function UserFooter({
     retry: false,
   });
   return (
-    <div className="border-border shrink-0 border-t">
+    <div className="shrink-0">
       {showSql && (
-        <div className="border-border bg-surface-2 max-h-44 min-h-10 overflow-auto border-b px-3 py-2">
+        <div className="border-border bg-surface-2 max-h-44 min-h-10 overflow-auto border-t px-4 py-2">
           {!dirty ? (
-            <p className="text-muted-foreground text-[11px]">No changes.</p>
+            <p className="text-muted-foreground text-xs">No changes</p>
           ) : problems.length > 0 ? (
-            <p className="text-muted-foreground text-[11px]">{problems[0]}</p>
+            <p className="text-error text-xs">{problems[0]}</p>
           ) : preview.isError ? (
             <ErrorLine error={errorInfo(preview.error)} />
           ) : preview.data ? (
@@ -1140,32 +1168,40 @@ function UserFooter({
         </div>
       )}
       {error && (
-        <div className="border-border border-b px-3 py-2">
+        <div className="border-border border-t px-4 py-2">
           <ErrorLine error={error.info} />
           {error.executed.length > 0 && (
-            <p className="text-muted-foreground mt-1 text-[11px]">
+            <p className="text-muted-foreground mt-1 text-xs">
               {error.executed.length} statement{error.executed.length === 1 ? "" : "s"} ran before
               the error and stay applied.
             </p>
           )}
         </div>
       )}
-      <div className="flex h-11 items-center gap-2 px-3">
-        <Button variant="ghost" size="xs" aria-expanded={showSql} onClick={onToggleSql}>
-          <ChevronRight className={cn("transition-transform", showSql && "rotate-90")} />
-          Preview SQL
-        </Button>
-        {problems.length > 0 && dirty && (
-          <span className="text-muted-foreground truncate text-[11px]">{problems[0]}</span>
-        )}
-        <span className="flex-1" />
-        <Button variant="ghost" size="sm" disabled={busy || !dirty} onClick={onDiscard}>
+      <DialogFooter className="m-0 items-center rounded-none rounded-br-xl">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <Button variant="ghost" size="xs" aria-expanded={showSql} onClick={onToggleSql}>
+            <ChevronRight
+              aria-hidden
+              className={cn(
+                "transition-transform duration-150 motion-reduce:transition-none",
+                showSql && "rotate-90",
+              )}
+            />
+            Preview SQL
+          </Button>
+          {problems.length > 0 && dirty && (
+            <span className="text-error truncate text-xs">{problems[0]}</span>
+          )}
+        </div>
+        <Button variant="outline" size="sm" disabled={busy || !dirty} onClick={onDiscard}>
           {draft.original ? "Discard" : "Cancel"}
         </Button>
         <Button size="sm" disabled={busy || !dirty || problems.length > 0} onClick={onApply}>
           {draft.original ? "Apply" : "Create"}
+          <KbdHint combo="Mod+S" />
         </Button>
-      </div>
+      </DialogFooter>
     </div>
   );
 }

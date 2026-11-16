@@ -28,9 +28,9 @@ export function Seg<T extends string>({
           aria-checked={o.value === value}
           onClick={() => onChange(o.value)}
           className={cn(
-            "h-full rounded-[5px] px-2 text-[11px] leading-none",
+            "focus-visible:ring-ring/50 h-full rounded-[5px] px-2 text-xs leading-none font-medium transition-colors outline-none focus-visible:ring-2",
             o.value === value
-              ? "bg-surface text-foreground dark:bg-accent font-medium shadow-xs"
+              ? "bg-surface text-foreground dark:bg-accent shadow-xs"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
@@ -62,8 +62,9 @@ export function Toggle({
       title={title}
       onClick={() => onChange(!pressed)}
       className={cn(
-        "text-muted-foreground hover:text-foreground h-6 text-[11px]",
-        pressed && "bg-muted text-foreground",
+        "text-muted-foreground hover:text-foreground",
+        pressed &&
+          "bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand dark:hover:bg-brand-soft",
       )}
     >
       {children}

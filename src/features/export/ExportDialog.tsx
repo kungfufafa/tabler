@@ -1,12 +1,14 @@
-import { CircleAlert, FileDown } from "lucide-react";
+import { FileDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Kbd } from "@/components/Kbd";
+import { FormError } from "@/components/FormError";
+import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -115,15 +117,12 @@ export function Progress({ run }: { run: ExportRun }) {
         </span>
         <span className="text-muted-foreground truncate tabular-nums">
           {formatBytes(run.bytes)} · {formatElapsed(now - run.startedAt)}
-          {run.cancelling ? " · cancelling…" : ""}
+          {run.cancelling ? " · canceling…" : ""}
         </span>
       </div>
       <div className="bg-surface-2 h-1 w-44 overflow-hidden rounded-full">
         <div
-          className={cn(
-            "bg-brand h-full rounded-full transition-[width] duration-200",
-            pct === null && "w-0",
-          )}
+          className={cn("bg-brand h-full rounded-full", pct === null && "w-0")}
           style={pct === null ? undefined : { width: `${pct}%` }}
         />
       </div>
@@ -157,7 +156,7 @@ function heldRowsHint(
       </span>
     );
   if (held.stopped === "cancelled")
-    return "The statement was cancelled: only the rows that arrived before it stopped are written.";
+    return "The statement was canceled: only the rows that arrived before it stopped are written.";
   if (held.stopped === "error")
     return "The statement failed partway: only the rows that arrived before the error are written.";
   return "The result stopped at the row limit; only the rows shown are written.";
@@ -184,7 +183,7 @@ function allResultsHint(format: FormatKind, ext: string, results: readonly RunRe
       )}
       {stopped > 0 && (
         <div>
-          {plural(stopped)} cancelled or failed partway: only the rows that arrived are written.
+          {plural(stopped)} canceled or failed partway: only the rows that arrived are written.
         </div>
       )}
     </>
@@ -438,7 +437,7 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
     >
       <DialogHeader className="border-border shrink-0 gap-1 border-b px-4 py-3 pr-12">
         <DialogTitle className="flex items-center gap-2 text-sm">
-          <FileDown className="text-brand size-4" />
+          <FileDown aria-hidden className="text-brand size-4 shrink-0" />
           Export
         </DialogTitle>
         <DialogDescription className="flex min-w-0 items-center gap-1.5 text-xs">
@@ -455,15 +454,15 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
           ))}
         </DialogDescription>
         {statementText !== null && (
-          <pre className="border-border bg-surface-2 text-muted-foreground mt-1 line-clamp-3 max-h-16 overflow-hidden rounded-md border px-2 py-1 font-mono text-[11px] leading-4 whitespace-pre-wrap">
-            {statementText.trim() || "(empty query)"}
+          <pre className="border-border bg-surface-2 text-muted-foreground mt-1 line-clamp-3 max-h-16 overflow-hidden rounded-md border px-2 py-1 font-mono text-[11.5px] leading-4 whitespace-pre-wrap">
+            {statementText.trim() || <span className="text-null italic">(empty query)</span>}
           </pre>
         )}
       </DialogHeader>
 
       {/* The wrapper scrolls: a fieldset does not clip its own overflow in every engine. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <fieldset disabled={running} className="flex min-w-0 flex-col gap-3 px-4 py-4">
+        <fieldset disabled={running} className="flex min-w-0 flex-col gap-3 p-4">
           {src.fromTab && (
             <Row id="export-rows" label="Rows" hint={rowsHint(src, scope, problem)}>
               <Segmented<RowScope>
@@ -569,12 +568,12 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
                 id="export-fields"
                 value={fieldsText}
                 onChange={(e) => setFieldsText(e.target.value)}
-                placeholder="Export all fields…"
+                placeholder="All fields"
                 autoFocus={target.focus === "fields"}
                 aria-invalid={fieldsIssue ? true : undefined}
                 spellCheck={false}
                 autoComplete="off"
-                className="h-7 w-full font-mono text-xs"
+                className="h-7 w-full rounded-md font-mono text-xs md:text-xs"
               />
             </Row>
           )}
@@ -632,7 +631,7 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
                         placeholder={src.defaultTableName ?? UNTITLED_TABLE}
                         spellCheck={false}
                         autoComplete="off"
-                        className="h-7 w-56 font-mono text-xs"
+                        className="h-7 w-56 rounded-md font-mono text-xs md:text-xs"
                       />
                     </Row>
                   )}
@@ -648,7 +647,7 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
                       onBlur={() =>
                         setBatchText(String(clampBatchSize(Number.parseInt(batchText, 10))))
                       }
-                      className="h-7 w-24 font-mono text-xs tabular-nums"
+                      className="h-7 w-24 rounded-md font-mono text-xs tabular-nums md:text-xs"
                     />
                   </Row>
                 </>
@@ -656,17 +655,17 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
             }
           />
           {problem?.field === "options" && (
-            <div className="text-warning text-[11px] leading-4">{problem.message}</div>
+            <div className="text-warning text-xs leading-4">{problem.message}</div>
           )}
         </fieldset>
       </div>
 
-      <div className="border-border bg-surface-2 flex min-h-12 shrink-0 items-center gap-2 rounded-b-xl border-t px-4 py-2">
+      <DialogFooter className="m-0 shrink-0 flex-row items-center">
         <div className="min-w-0 flex-1">
           {run ? (
             <div className="flex min-w-0 flex-col gap-0.5">
               {run.table && (
-                <span className="text-muted-foreground truncate text-[11px]">
+                <span className="text-muted-foreground truncate text-xs">
                   Result {run.table.index + 1} of {run.table.count}:{" "}
                   <span className="text-foreground">{run.table.name}</span>
                 </span>
@@ -674,20 +673,16 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
               <Progress run={run} />
             </div>
           ) : error ? (
-            <div role="alert" className="text-error flex min-w-0 items-start gap-1.5 text-xs">
-              <CircleAlert className="mt-px size-3.5 shrink-0" />
-              <span className="line-clamp-2" title={error}>
-                {error}
-              </span>
-            </div>
+            <FormError clamp title={error}>
+              {error}
+            </FormError>
           ) : src.error ? (
-            <div role="alert" className="text-error flex min-w-0 items-center gap-1.5 text-xs">
-              <CircleAlert className="size-3.5 shrink-0" />
-              <span className="truncate">{src.error}</span>
-            </div>
+            <FormError clamp title={src.error}>
+              {src.error}
+            </FormError>
           ) : (
             <span
-              className="text-muted-foreground block truncate font-mono text-[11px]"
+              className="text-muted-foreground block truncate font-mono text-xs"
               title={fileName}
             >
               {fileName}
@@ -702,23 +697,20 @@ function ExportForm({ target }: { target: OpenExportArgs }) {
             onClick={() => void cancelExport()}
             disabled={run.cancelling}
           >
-            Cancel export
+            Cancel Export
           </Button>
         ) : (
           <>
-            <Button type="button" variant="ghost" size="sm" onClick={closeExport}>
+            <Button type="button" variant="outline" size="sm" onClick={closeExport}>
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={!canSubmit}>
               Export…
-              <Kbd
-                combo="Mod+Enter"
-                className="border-primary-foreground/30 text-primary-foreground/80 bg-transparent"
-              />
+              <KbdHint combo="Mod+Enter" />
             </Button>
           </>
         )}
-      </div>
+      </DialogFooter>
     </form>
   );
 }
@@ -740,7 +732,6 @@ export function ExportDialog() {
             ? "sm:h-[min(34rem,calc(100dvh-4rem))] sm:max-w-[min(48rem,calc(100%-2rem))]"
             : "sm:max-w-[34rem]",
         )}
-        showCloseButton
         // Closed and animated out: the source (a shown result's rows) is no longer needed.
         onCloseAutoFocus={releaseExportTarget}
       >

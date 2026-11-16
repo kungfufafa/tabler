@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
+import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -11,7 +12,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { ipc, toIpcError } from "@/lib/ipc";
 import { pickExportPath, type ExportScope } from "./ioStore";
 
@@ -85,15 +85,15 @@ export function ExportConnectionsDialog({
       <DialogContent className="sm:max-w-[34rem]">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>{shown?.title}</DialogTitle>
-            <DialogDescription>
-              {plural(count, "connection")} with their groups, tags, colours and safe mode, as a
+            <DialogTitle className="text-sm">{shown?.title}</DialogTitle>
+            <DialogDescription className="text-xs">
+              {plural(count, "connection")} with their groups, tags, colors and safe mode, as a
               .tablerconnections file.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-2.5">
-            <div className="flex flex-col gap-0.5">
-              <label className="flex items-center gap-2 text-[13px]">
+          <div className="flex flex-col">
+            <div className="flex flex-col">
+              <label className="flex h-7 items-center gap-2 text-xs">
                 <Checkbox
                   checked={passwords}
                   aria-describedby={`${id}-passwords-hint`}
@@ -104,11 +104,14 @@ export function ExportConnectionsDialog({
                 />
                 Include database passwords
               </label>
-              <p id={`${id}-passwords-hint`} className="text-muted-foreground pl-6 text-[11px]">
+              <p
+                id={`${id}-passwords-hint`}
+                className="text-muted-foreground pl-6 text-xs leading-4"
+              >
                 Also includes IAM password commands.
               </p>
             </div>
-            <label className="flex items-center gap-2 text-[13px]">
+            <label className="flex h-7 items-center gap-2 text-xs">
               <Checkbox
                 checked={sshSecrets}
                 onCheckedChange={(v) => {
@@ -119,10 +122,16 @@ export function ExportConnectionsDialog({
               Include SSH passwords and passphrases
             </label>
           </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor={`${id}-password`} className="text-xs font-normal">
-              File password{secrets ? "" : " (optional)"}
-            </Label>
+          <FormField
+            label="File password"
+            htmlFor={`${id}-password`}
+            error={error}
+            hint={
+              secrets
+                ? "Required: it encrypts the whole file. Importing asks for it."
+                : "With a password the whole file is encrypted."
+            }
+          >
             <Input
               id={`${id}-password`}
               type="password"
@@ -132,23 +141,14 @@ export function ExportConnectionsDialog({
                 setError(null);
               }}
               autoComplete="new-password"
+              placeholder={secrets ? undefined : "Optional"}
               aria-invalid={error ? true : undefined}
-              className="font-mono"
+              aria-describedby={error ? `${id}-password-error` : `${id}-password-hint`}
+              className="h-7 rounded-md font-mono text-xs md:text-xs"
             />
-            {error ? (
-              <p role="alert" className="text-error text-[11px]">
-                {error}
-              </p>
-            ) : (
-              <p className="text-muted-foreground text-[11px]">
-                {secrets
-                  ? "Required: it encrypts the whole file. Importing asks for it."
-                  : "With a password the whole file is encrypted."}
-              </p>
-            )}
-          </div>
+          </FormField>
           <DialogFooter>
-            <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+            <Button type="button" variant="outline" size="sm" onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy || count === 0}>

@@ -70,7 +70,7 @@ function Chip({ id, className }: { id: ToolbarItemId; className?: string }) {
   return (
     <span
       className={cn(
-        "border-border bg-surface text-foreground flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[11px] whitespace-nowrap shadow-xs",
+        "border-border bg-surface text-foreground flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs whitespace-nowrap shadow-xs",
         id === "status" && "min-w-32 justify-center",
         id === "flexibleSpace" && "border-dashed",
         className,
@@ -152,7 +152,7 @@ function PaletteItem({ id, onAdd }: { id: ToolbarItemId; onAdd: () => void }) {
         }
       }}
       className={cn(
-        "hover:bg-muted focus-visible:ring-ring/50 flex min-w-0 flex-col items-center gap-1 rounded-md px-1.5 py-2 text-center outline-none focus-visible:ring-2",
+        "hover:bg-row-hover focus-visible:ring-ring/50 flex min-w-0 flex-col items-center gap-1 rounded-md px-1.5 py-2 text-center transition-colors outline-none focus-visible:ring-2",
         isDragging && "opacity-40",
       )}
     >
@@ -164,7 +164,7 @@ function PaletteItem({ id, onAdd }: { id: ToolbarItemId; onAdd: () => void }) {
           </span>
         );
       })()}
-      <span className="text-[11px] leading-tight">{TOOLBAR_ITEM_LABEL[id]}</span>
+      <span className="text-xs leading-tight">{TOOLBAR_ITEM_LABEL[id]}</span>
     </button>
   );
 }
@@ -187,12 +187,12 @@ function Strip({
         data-slot="toolbar-strip"
         className={cn(
           "border-border bg-surface-2 flex min-h-11 flex-wrap items-center gap-1.5 rounded-lg border px-2 py-2",
-          isOver && "border-brand",
+          isOver && "bg-brand-soft ring-brand/50 ring-1 ring-inset",
         )}
       >
         {items.length === 0 && (
-          <span className="text-muted-foreground px-1 text-[11px]">
-            Drag items here to add them to the toolbar.
+          <span className="text-muted-foreground px-1 text-xs">
+            Drag items here to add them to the toolbar
           </span>
         )}
         {items.map((id, i) => (
@@ -216,7 +216,7 @@ function Palette({ items, onAdd }: { items: ToolbarItemId[]; onAdd: (id: Toolbar
       data-slot="toolbar-palette"
       className={cn(
         "border-border grid grid-cols-5 gap-1 rounded-lg border border-dashed p-2",
-        isOver && "border-destructive/60",
+        isOver && "border-error/60",
       )}
     >
       {items.map((id) => (
@@ -286,8 +286,8 @@ export function CustomizeToolbarDialog({
         className="top-14 max-h-[calc(100dvh-4.5rem)] translate-y-0 overflow-y-auto sm:max-w-[min(48rem,calc(100%-2rem))]"
       >
         <DialogHeader>
-          <DialogTitle>Customize Toolbar</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-sm">Customize Toolbar</DialogTitle>
+          <DialogDescription className="text-xs">
             Drag items into the toolbar, or out of it to remove them. Double-click an item to add it
             at the end.
           </DialogDescription>
@@ -333,11 +333,7 @@ export function CustomizeToolbarDialog({
               value={display}
               onValueChange={(v) => setPref("toolbarDisplay", v as ToolbarDisplay)}
             >
-              <SelectTrigger
-                size="sm"
-                aria-label="Show"
-                className="text-foreground h-7 w-36 rounded-md text-xs"
-              >
+              <SelectTrigger size="sm" aria-label="Show" className="text-foreground w-36 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent data-scope="dialog">

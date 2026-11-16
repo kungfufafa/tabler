@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { SectionLabel } from "@/components/SectionLabel";
 import { cn } from "@/lib/utils";
 import type { BoardDraft } from "./store";
 
@@ -75,13 +76,18 @@ export function BoardList({
       data-slot="metrics-board-list"
       className="border-border bg-sidebar flex w-52 shrink-0 flex-col border-r"
     >
-      <div className="border-border flex h-9 shrink-0 items-center gap-0.5 border-b pr-1 pl-3">
-        <span className="text-muted-foreground min-w-0 flex-1 truncate text-[11px] font-semibold">
+      <div className="border-border flex h-8 shrink-0 items-center gap-1 border-b px-3 text-xs">
+        <SectionLabel as="span" className="min-w-0 flex-1 truncate">
           Boards
-        </span>
+        </SectionLabel>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-xs" aria-label="More board actions">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label="More board actions"
+              className="hover:bg-accent dark:hover:bg-accent aria-expanded:bg-accent"
+            >
               <Ellipsis />
             </Button>
           </DropdownMenuTrigger>
@@ -101,6 +107,7 @@ export function BoardList({
           size="icon-xs"
           aria-label="New Board…"
           title="New Board…"
+          className="hover:bg-accent dark:hover:bg-accent"
           onClick={actions.onNew}
         >
           <Plus />
@@ -114,7 +121,7 @@ export function BoardList({
                 autoFocus
                 aria-label="Board name"
                 value={draft}
-                className="h-6 px-1.5 text-xs md:text-xs"
+                className="h-6 rounded-md px-1.5 text-xs md:text-xs"
                 onChange={(e) => setDraft(e.target.value)}
                 onFocus={(e) => {
                   ended.current = false;
@@ -134,13 +141,13 @@ export function BoardList({
                     onClick={() => actions.onSelect(b.id)}
                     onDoubleClick={() => setRenamingId(b.id)}
                     className={cn(
-                      "flex h-6 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-xs",
+                      "focus-visible:ring-ring flex h-6 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-xs transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset",
                       b.id === selectedId
                         ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                        : "hover:bg-sidebar-accent/60",
+                        : "hover:bg-row-hover",
                     )}
                   >
-                    <Gauge className="text-muted-foreground size-3.5 shrink-0" />
+                    <Gauge className="text-muted-foreground size-4 shrink-0" />
                     <span className="min-w-0 flex-1 truncate">{b.name}</span>
                     {b.profileId === null && (
                       <Globe
@@ -175,16 +182,16 @@ export function BoardList({
           </li>
         ))}
         {boards.length === 0 && (
-          <li className="text-muted-foreground px-1.5 py-2 text-[11px] italic">
+          <li className="text-muted-foreground px-1.5 py-2 text-xs">
             {loading ? <QuietStatus /> : (error ?? "No boards yet")}
           </li>
         )}
       </ul>
-      <div className="border-border shrink-0 border-t p-1.5">
+      <div className="border-border flex h-8 shrink-0 items-center border-t px-1.5">
         <Button
           variant="ghost"
           size="xs"
-          className="text-muted-foreground w-full justify-start"
+          className="text-muted-foreground hover:bg-accent dark:hover:bg-accent w-full justify-start"
           onClick={actions.onNew}
         >
           <Plus />

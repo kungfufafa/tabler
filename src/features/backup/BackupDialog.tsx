@@ -1,11 +1,20 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, DatabaseBackup, FileUp, Undo2 } from "lucide-react";
+import { DatabaseBackup, FileUp, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Kbd } from "@/components/Kbd";
+import { FormError } from "@/components/FormError";
+import { FormField } from "@/components/FormField";
+import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useProfiles } from "@/features/connections/useConnections";
 import { ipc, toIpcError, type ConnectionProfile, type RestoreFileInfo } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
@@ -36,7 +45,7 @@ import {
   type RestoreOptions,
   type RestoreTool,
 } from "./options";
-import { Field } from "./parts";
+import { ColumnHeader } from "./parts";
 import { backupFileName } from "./pattern";
 import { PatternField } from "./PatternField";
 import { pickBackupFolder, pickRestoreFile } from "./pickers";
@@ -66,21 +75,13 @@ function useClock(): Date {
   return now;
 }
 
+/** The full-bleed footer bar: a status slot on the left, then the buttons. */
 function Footer({ children, left }: { children: ReactNode; left?: ReactNode }) {
   return (
-    <div className="border-border bg-surface-2/60 flex min-h-12 shrink-0 items-center gap-2 rounded-b-xl border-t px-4 py-2">
+    <DialogFooter className="m-0 shrink-0 items-center">
       <div className="min-w-0 flex-1">{left}</div>
       {children}
-    </div>
-  );
-}
-
-function Problem({ children }: { children: ReactNode }) {
-  return (
-    <div role="alert" className="text-error flex min-w-0 items-start gap-1.5 text-xs">
-      <CircleAlert className="mt-px size-3.5 shrink-0" />
-      <span className="line-clamp-2">{children}</span>
-    </div>
+    </DialogFooter>
   );
 }
 
@@ -284,7 +285,15 @@ function BackupForm({ request }: { request: BackupRequest }) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <RunPanel run={run} />
-        <Footer>
+        <Footer
+          left={
+            run.status === "running" ? null : (
+              <Button type="button" variant="outline" size="sm" onClick={dismissRun}>
+                <Undo2 /> Back
+              </Button>
+            )
+          }
+        >
           {run.status === "running" ? (
             <Button
               type="button"
@@ -296,14 +305,9 @@ function BackupForm({ request }: { request: BackupRequest }) {
               Cancel {run.mode === "backup" ? "Backup" : "Restore"}
             </Button>
           ) : (
-            <>
-              <Button type="button" variant="ghost" size="sm" onClick={dismissRun}>
-                <Undo2 /> Back
-              </Button>
-              <Button type="button" size="sm" onClick={closeBackup}>
-                Done
-              </Button>
-            </>
+            <Button type="button" size="sm" onClick={closeBackup}>
+              Done
+            </Button>
           )}
         </Footer>
       </div>
@@ -343,25 +347,26 @@ function BackupForm({ request }: { request: BackupRequest }) {
           onRetry={() => void target.refetch()}
         />
         <div className="flex min-h-0 flex-col">
-          <div className="border-border flex h-8 shrink-0 items-center border-b px-3">
-            <span className="text-muted-foreground truncate text-[11px] font-semibold tracking-wide uppercase">
-              Options
-            </span>
-            {target.data?.server && (
-              <span className="text-muted-foreground ml-auto truncate text-[11px]">
-                Server {target.data.server.text}
-              </span>
-            )}
-          </div>
+          <ColumnHeader
+            right={
+              target.data?.server && (
+                <span className="text-muted-foreground min-w-0 truncate text-xs">
+                  Server {target.data.server.text}
+                </span>
+              )
+            }
+          >
+            Options
+          </ColumnHeader>
           {!profile ? (
             <p className="text-muted-foreground px-3 py-3 text-xs">
               Backup and restore run pg_dump / mysqldump. Add a PostgreSQL or MySQL connection
               first; SQLite databases are backed up by copying their file.
             </p>
           ) : (
-            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-3 py-3">
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-3">
               {mode === "restore" && (
-                <Field
+                <FormField
                   label="File"
                   hint={
                     file ? (
@@ -392,7 +397,7 @@ function BackupForm({ request }: { request: BackupRequest }) {
                       </span>
                     )}
                   </div>
-                </Field>
+                </FormField>
               )}
               {tool && (
                 <VersionPicker
@@ -406,16 +411,16 @@ function BackupForm({ request }: { request: BackupRequest }) {
                 />
               )}
               {tool && (
-                <Field label="Options">
+                <FormField label="Options">
                   <OptionChips tool={tool} flags={flags} onChange={setFlags} />
-                </Field>
+                </FormField>
               )}
               {mode === "backup" && backup && (
                 <>
                   <label
                     className={cn(
-                      "flex cursor-default items-center gap-2 text-xs",
-                      !gzipOk && "text-muted-foreground opacity-60",
+                      "flex h-7 cursor-default items-center gap-2 text-xs",
+                      !gzipOk && "opacity-50",
                     )}
                     title={
                       gzipOk
@@ -444,7 +449,9 @@ function BackupForm({ request }: { request: BackupRequest }) {
       <Footer
         left={
           problem ? (
-            <Problem>{problem}</Problem>
+            <FormError clamp title={problem}>
+              {problem}
+            </FormError>
           ) : mode === "restore" && file && database ? (
             <span className="text-muted-foreground block truncate text-xs">
               Restores {basename(file.path)} into <span className="font-mono">{database}</span>
@@ -452,15 +459,12 @@ function BackupForm({ request }: { request: BackupRequest }) {
           ) : null
         }
       >
-        <Button type="button" variant="ghost" size="sm" onClick={closeBackup}>
+        <Button type="button" variant="outline" size="sm" onClick={closeBackup}>
           Cancel
         </Button>
         <Button type="submit" size="sm" disabled={!canStart}>
           {startLabel}
-          <Kbd
-            combo="Mod+Enter"
-            className="border-primary-foreground/30 text-primary-foreground/80 bg-transparent"
-          />
+          <KbdHint combo="Mod+Enter" />
         </Button>
       </Footer>
     </form>
@@ -477,16 +481,15 @@ export function BackupDialog() {
     <Dialog open={open} onOpenChange={(next) => !next && closeBackup()}>
       <DialogContent
         className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(880px,calc(100%-2rem))]"
-        showCloseButton
         onCloseAutoFocus={releaseBackupWindow}
       >
-        <div className="border-border flex shrink-0 items-center gap-2 border-b px-4 py-2.5 pr-12">
-          {mode === "backup" ? (
-            <DatabaseBackup className="text-brand size-4" />
-          ) : (
-            <FileUp className="text-brand size-4" />
-          )}
-          <DialogTitle className="text-sm">
+        <DialogHeader className="shrink-0 gap-1 border-b px-4 py-3 pr-12">
+          <DialogTitle className="flex items-center gap-2 text-sm">
+            {mode === "backup" ? (
+              <DatabaseBackup aria-hidden className="text-brand size-4 shrink-0" />
+            ) : (
+              <FileUp aria-hidden className="text-brand size-4 shrink-0" />
+            )}
             {mode === "backup" ? "Backup database" : "Restore database"}
           </DialogTitle>
           <DialogDescription className="sr-only">
@@ -494,7 +497,7 @@ export function BackupDialog() {
               ? "Dump a database with pg_dump or mysqldump into a file."
               : "Load a dump file into a database with psql, pg_restore or mysql."}
           </DialogDescription>
-        </div>
+        </DialogHeader>
         {shown && <BackupForm key={session} request={shown} />}
       </DialogContent>
     </Dialog>

@@ -165,7 +165,7 @@ export function useBoardRuntime(
         } catch (err) {
           const message = errorText(err);
           patchRun(boardId, buttonId, { status: "error", error: message, at: Date.now() });
-          toast.error(`${o.title} failed`, { description: message });
+          toast.error(`Could not run ${o.title}`, { description: message });
           return;
         } finally {
           if (inflight.current.get(buttonId) === queryId) inflight.current.delete(buttonId);

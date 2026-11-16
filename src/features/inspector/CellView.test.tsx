@@ -79,7 +79,7 @@ describe("CellView: JSON with sorted keys", () => {
     expect(pre()).toBe(
       '{\n  "b": 9007199254740993,\n  "a": {\n    "d": 1.10,\n    "c": "\\u00e9"\n  },\n  "b": 2\n}',
     );
-    const toggle = screen.getByRole("button", { name: "Sort keys" });
+    const toggle = screen.getByRole("button", { name: "Sort Keys" });
     expect(toggle).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "true");
@@ -90,21 +90,21 @@ describe("CellView: JSON with sorted keys", () => {
     // A later Cell view opens sorted; Copy still hands out the value as stored.
     cleanup();
     render(<CellView cell={cell(col("json"), { t: "json", v: raw })} />);
-    expect(screen.getByRole("button", { name: "Sort keys" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Sort Keys" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
     expect(pre()?.indexOf('"a"')).toBeLessThan(pre()?.indexOf('"b"') ?? -1);
-    fireEvent.click(screen.getByRole("button", { name: "Sort keys" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sort Keys" }));
     expect(pre()?.indexOf('"b"')).toBeLessThan(pre()?.indexOf('"a"') ?? -1);
   });
 
   it("has no toggle for non-JSON values or JSON that does not parse", () => {
     render(<CellView cell={cell(col("text"), { t: "text", v: "{}" })} />);
-    expect(screen.queryByRole("button", { name: "Sort keys" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sort Keys" })).not.toBeInTheDocument();
     cleanup();
     render(<CellView cell={cell(col("json"), { t: "json", v: "{oops" })} />);
-    expect(screen.queryByRole("button", { name: "Sort keys" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sort Keys" })).not.toBeInTheDocument();
     expect(document.querySelector("pre")!.textContent).toBe("{oops");
   });
 
@@ -116,7 +116,7 @@ describe("CellView: JSON with sorted keys", () => {
       throw new Error("blocked");
     });
     render(<CellView cell={cell(col("json"), { t: "json", v: '{"b":1,"a":2}' })} />);
-    fireEvent.click(screen.getByRole("button", { name: "Sort keys" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sort Keys" }));
     expect(document.querySelector("pre")!.textContent).toBe('{\n  "a": 2,\n  "b": 1\n}');
   });
 });

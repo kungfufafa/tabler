@@ -96,7 +96,7 @@ export function mongoObjectMenu(item: SidebarItemRef, ctx: ObjectMenuContext): O
         disabled: readOnly,
         run: async () => {
           const text = await ask({
-            title: `New index on ${collection}`,
+            title: `New Index on ${collection}`,
             description: "The keys, then any options, in shell syntax.",
             input: { label: "Index", placeholder: "{email: 1}, {unique: true}" },
             confirmLabel: "Create",
@@ -113,7 +113,7 @@ export function mongoObjectMenu(item: SidebarItemRef, ctx: ObjectMenuContext): O
         disabled: readOnly,
         run: async () => {
           const name = await ask({
-            title: `Drop an index of ${collection}`,
+            title: `Drop an Index of ${collection}`,
             input: { label: "Index name", placeholder: "email_1" },
             confirmLabel: "Drop Index",
             destructive: true,

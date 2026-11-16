@@ -222,7 +222,7 @@ function Pane({
             aria-label="Close split pane"
             title="Close split pane"
             onClick={handlers.split}
-            className="text-muted-foreground hover:text-foreground hover:bg-muted absolute top-1 right-1.5 z-[3] flex size-5 items-center justify-center rounded"
+            className="text-muted-foreground hover:text-foreground hover:bg-accent absolute top-1 right-1.5 z-[3] flex size-5 items-center justify-center rounded transition-colors"
           >
             <X className="size-3" />
           </button>

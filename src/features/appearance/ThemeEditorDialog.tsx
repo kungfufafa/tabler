@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { FormField } from "@/components/FormField";
+import { KbdHint } from "@/components/KbdHint";
+import { SectionLabel } from "@/components/SectionLabel";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -51,7 +54,7 @@ export function ThemeEditorDialog({
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
-        className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(48rem,calc(100%-2rem))]"
+        className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(56rem,calc(100%-2rem))]"
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
             e.preventDefault();
@@ -62,43 +65,44 @@ export function ThemeEditorDialog({
         }}
       >
         <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
-            Colours are hex values, <code className="font-mono">#rrggbb</code> or{" "}
+          <DialogTitle className="text-sm">{title}</DialogTitle>
+          <DialogDescription className="text-xs">
+            Colors are hex values, <code className="font-mono">#rrggbb</code> or{" "}
             <code className="font-mono">#rrggbbaa</code> for tints. The sample below follows your
             changes.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex items-center gap-3">
-          <label htmlFor="theme-name" className="text-xs">
-            Name
-          </label>
-          <Input
-            id="theme-name"
-            value={name}
-            maxLength={MAX_THEME_NAME}
-            autoFocus
-            spellCheck={false}
-            aria-invalid={cleanName ? undefined : true}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                save();
-              }
-            }}
-            className="h-7 flex-1 rounded-md px-2 text-xs"
-          />
-          <span id="theme-base-label" className="text-xs">
-            Based on
-          </span>
-          <Segmented id="theme-base" value={base} options={BASE_OPTIONS} onChange={setBase} />
+        <div className="flex items-start gap-3">
+          <FormField label="Name" htmlFor="theme-name" className="flex-1">
+            <Input
+              id="theme-name"
+              value={name}
+              maxLength={MAX_THEME_NAME}
+              autoFocus
+              spellCheck={false}
+              aria-invalid={cleanName ? undefined : true}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  save();
+                }
+              }}
+              className="h-7 rounded-md px-2 text-xs md:text-xs"
+            />
+          </FormField>
+          <div className="flex flex-col gap-1">
+            <span id="theme-base-label" className="text-muted-foreground text-xs font-medium">
+              Based on
+            </span>
+            <Segmented id="theme-base" value={base} options={BASE_OPTIONS} onChange={setBase} />
+          </div>
         </div>
         <ThemePreview base={base} tokens={tokens} />
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
           {TOKEN_GROUPS.map((group) => (
             <section key={group} className="mb-3">
-              <h3 className="text-muted-foreground mb-1 text-[11px] font-medium">{group}</h3>
+              <SectionLabel className="mb-1">{group}</SectionLabel>
               <div className="grid grid-cols-2 gap-x-6">
                 {THEME_TOKENS.filter((t) => t.group === group).map((t) => (
                   <ColorField
@@ -114,11 +118,12 @@ export function ThemeEditorDialog({
           ))}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={save} disabled={!cleanName}>
+          <Button size="sm" onClick={save} disabled={!cleanName}>
             Save Theme
+            <KbdHint combo="Mod+Enter" />
           </Button>
         </DialogFooter>
       </DialogContent>

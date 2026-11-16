@@ -443,7 +443,7 @@ describe("SchemaTree objects", () => {
 
     stubWorkspace();
     await actions.run("grid.preview");
-    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
     const ops = within(sheet).getByRole("region", { name: "Sidebar Item operations" });
     await waitFor(() => expect(ops).toHaveTextContent('Delete tagsDROP TABLE "public"."tags";'));
     expect(ops).toHaveTextContent('Truncate usersTRUNCATE TABLE "public"."users";');

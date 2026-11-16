@@ -1,6 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Ban, CircleCheck, CircleX, Info, TriangleAlert } from "lucide-react";
 import { memo, useMemo, useState } from "react";
+import { QuietStatus } from "@/components/QuietLoading";
 import { useLacksFields } from "@/features/datagrid/lacksFields";
 import { formatDuration } from "@/lib/format/time";
 import { cn } from "@/lib/utils";
@@ -35,7 +36,7 @@ function StatusIcon({ status }: { status: StatementStatus }) {
     case "error":
       return <CircleX className="text-error size-3.5 shrink-0" aria-label="Failed" />;
     case "cancelled":
-      return <Ban className="text-warning size-3.5 shrink-0" aria-label="Cancelled" />;
+      return <Ban className="text-warning size-3.5 shrink-0" aria-label="Canceled" />;
   }
 }
 
@@ -46,7 +47,7 @@ function NoticeLine({ notice }: { notice: RunNotice }) {
   return (
     <div
       className={cn(
-        "mt-0.5 ml-[46px] flex items-start gap-1.5 text-[11px]",
+        "mt-0.5 ml-[46px] flex items-start gap-1.5",
         warning ? "text-warning" : "text-muted-foreground",
       )}
       title={notice.context ? `CONTEXT: ${notice.context}` : undefined}
@@ -75,7 +76,7 @@ function PlainResult({ set }: { set: ResultSetInfo }) {
     : "…";
   return (
     <pre
-      className="selectable bg-muted/40 text-foreground/90 mt-1 ml-[46px] max-h-64 overflow-auto rounded px-2 py-1 font-mono text-[11px] leading-4"
+      className="selectable bg-muted/40 text-foreground mt-1 ml-[46px] max-h-64 overflow-auto rounded px-2 py-1 font-mono text-[11.5px] leading-4"
       data-slot="plain-result"
     >
       {text}
@@ -112,7 +113,7 @@ const StatementRow = memo(function StatementRow({
     st.status === "running"
       ? "Running…"
       : st.status === "cancelled"
-        ? "Cancelled"
+        ? "Canceled"
         : st.status === "error"
           ? "Failed"
           : st.result
@@ -131,10 +132,10 @@ const StatementRow = memo(function StatementRow({
         }}
       >
         <StatusIcon status={st.status} />
-        <span className="text-muted-foreground w-5 shrink-0 text-right text-[10px] tabular-nums">
+        <span className="text-muted-foreground w-5 shrink-0 text-right tabular-nums">
           {st.index + 1}
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{firstLine(st.sql)}</span>
+        <span className="min-w-0 flex-1 truncate font-mono">{firstLine(st.sql)}</span>
         <span
           className={cn(
             "shrink-0 tabular-nums",
@@ -158,10 +159,10 @@ const StatementRow = memo(function StatementRow({
         />
       )}
       {st.status === "cancelled" && st.error && (
-        <div className="text-warning mt-0.5 ml-[46px] text-[11px]">{st.error.message}</div>
+        <div className="text-warning mt-0.5 ml-[46px]">{st.error.message}</div>
       )}
       {st.result?.lastInsertId && (
-        <div className="text-muted-foreground mt-0.5 ml-[46px] text-[11px]">
+        <div className="text-muted-foreground mt-0.5 ml-[46px]">
           Last insert id: <span className="selectable font-mono">{st.result.lastInsertId}</span>
         </div>
       )}
@@ -169,10 +170,7 @@ const StatementRow = memo(function StatementRow({
         <NoticeLine key={`live-${i}`} notice={n} />
       ))}
       {notices.map((n, i) => (
-        <div
-          key={i}
-          className="text-muted-foreground mt-0.5 ml-[46px] flex items-start gap-1.5 text-[11px]"
-        >
+        <div key={i} className="text-muted-foreground mt-0.5 ml-[46px] flex items-start gap-1.5">
           <Info className="mt-0.5 size-3 shrink-0" />
           <span className="selectable break-words whitespace-pre-wrap">{n}</span>
         </div>
@@ -298,7 +296,7 @@ export function MessagesView({ tabId, run }: { tabId: string; run: RunState }) {
       {run.error && (
         <div className="border-gridline shrink-0 border-b px-3 py-1.5">
           {run.error.code === "CANCELLED" ? (
-            <div className="text-warning text-[11px]">{run.error.message}</div>
+            <div className="text-warning">{run.error.message}</div>
           ) : (
             <ErrorBlock
               tabId={tabId}
@@ -309,14 +307,10 @@ export function MessagesView({ tabId, run }: { tabId: string; run: RunState }) {
           )}
         </div>
       )}
-      {waiting && (
-        <div className="text-muted-foreground flex shrink-0 items-center gap-2 px-3 py-2">
-          <span className="sr-only">Waiting for the server…</span>
-        </div>
-      )}
+      {waiting && <QuietStatus>Waiting for the server</QuietStatus>}
       {extra > 0 && (
         <div
-          className="border-gridline text-muted-foreground flex shrink-0 items-center gap-1.5 border-b px-3 py-1.5 text-[11px]"
+          className="border-gridline bg-surface-2 text-muted-foreground flex min-h-6 shrink-0 items-center gap-1.5 border-b px-3 py-1"
           data-slot="overflow-note"
         >
           <Info className="size-3 shrink-0" />

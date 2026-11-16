@@ -196,7 +196,7 @@ describe("reloadSchema", () => {
     await waitFor(() => expect(qc.getQueryState(["schemas", "c1"])?.status).toBe("success"));
     await act(() => commands().reloadSchema("c1"));
     expect(toast.success).not.toHaveBeenCalled();
-    expect(toast.error).toHaveBeenCalledWith("Could not reload schema", {
+    expect(toast.error).toHaveBeenCalledWith("Could not reload the schema", {
       description: "connection lost",
     });
     schemas.unsubscribe();

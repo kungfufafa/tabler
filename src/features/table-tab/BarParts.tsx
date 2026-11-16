@@ -1,5 +1,5 @@
 import type { ComponentProps, ReactNode } from "react";
-import { Kbd } from "@/components/Kbd";
+import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ActionId } from "@/features/palette/actions";
@@ -32,6 +32,12 @@ export function BottomBarFrame({
   );
 }
 
+/**
+ * Hover and open state of a ghost button on the `bg-surface-2` bar: the primitive's `hover:bg-muted`
+ * is the bar's own colour there (docs/ui-conventions.md, State tokens).
+ */
+export const BAR_HOVER = "hover:bg-accent dark:hover:bg-accent aria-expanded:bg-accent";
+
 /** A thin vertical rule between groups of bottom-bar controls. */
 export function BarSeparator({ className }: { className?: string }) {
   return <span aria-hidden className={cn("bg-border mx-0.5 h-4 w-px shrink-0", className)} />;
@@ -40,9 +46,7 @@ export function BarSeparator({ className }: { className?: string }) {
 /** An action's primary shortcut, styled for a tooltip (nothing when it has none). */
 export function TooltipKeys({ id }: { id: ActionId }) {
   const keys = shortcutFor(id);
-  return keys ? (
-    <Kbd combo={keys} className="border-border/40 bg-transparent text-inherit" />
-  ) : null;
+  return keys ? <KbdHint combo={keys} /> : null;
 }
 
 /** Tooltip text plus the shortcut of `action`, if any. */
@@ -86,7 +90,7 @@ export function BarIconButton({
         variant="ghost"
         size="icon-xs"
         aria-label={label}
-        className={cn("text-muted-foreground hover:text-foreground", className)}
+        className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER, className)}
         {...props}
       >
         {children}

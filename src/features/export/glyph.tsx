@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 /** A one-glyph choice (`"`, `;`, `.`): large and bold enough to read, in a cell wide enough to hit. */
 export const mono = (label: string) => (
-  <span className="inline-block min-w-5 text-center font-mono text-[13px] leading-none font-semibold">
+  <span className="inline-block min-w-5 text-center font-mono text-sm leading-none font-semibold">
     {label}
   </span>
 );

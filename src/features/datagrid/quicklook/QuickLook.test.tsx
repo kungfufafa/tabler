@@ -219,7 +219,7 @@ describe("QuickLook", () => {
     mount({ column: col("data", "bytes"), value: bytes([1, 2], true), loadFull });
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Save/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Load full value/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Load Full Value/ }));
     await waitFor(() => expect(editor().state.doc.toString()).toBe("01 02 03 04"));
     expect(screen.getByRole("button", { name: /Save/ })).toBeDisabled();
   });
@@ -230,7 +230,7 @@ describe("QuickLook", () => {
     const unsorted = '{\n  "b": 1,\n  "a": {\n    "d": 2,\n    "c": 3\n  }\n}';
     const sorted = '{\n  "a": {\n    "c": 3,\n    "d": 2\n  },\n  "b": 1\n}';
     expect(editor().state.doc.toString()).toBe(unsorted);
-    const sort = screen.getByRole("button", { name: "Sort keys" });
+    const sort = screen.getByRole("button", { name: "Sort Keys" });
     expect(sort).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(sort);
     expect(sort).toHaveAttribute("aria-pressed", "true");
@@ -261,7 +261,7 @@ describe("QuickLook", () => {
   it("JSON: Sort keys keeps big numbers, duplicate keys and escapes, and is remembered", () => {
     const raw = '{"b":9007199254740993,"a":1.10,"b":2,"u":"\\u00e9"}';
     mount({ column: col("doc", "json"), value: { t: "json", v: raw } });
-    fireEvent.click(screen.getByRole("button", { name: "Sort keys" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sort Keys" }));
     expect(editor().state.doc.toString()).toBe(
       '{\n  "a": 1.10,\n  "b": 9007199254740993,\n  "b": 2,\n  "u": "\\u00e9"\n}',
     );
@@ -269,7 +269,7 @@ describe("QuickLook", () => {
     // A later Quick Look opens sorted.
     cleanup();
     mount({ column: col("doc", "json"), value: { t: "json", v: raw } });
-    expect(screen.getByRole("button", { name: "Sort keys" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Sort Keys" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -279,7 +279,7 @@ describe("QuickLook", () => {
     // Show raw is the stored text: not sorted, and no toggle.
     fireEvent.click(screen.getByRole("button", { name: "Show raw" }));
     expect(editor().state.doc.toString()).toBe(raw);
-    expect(screen.queryByRole("button", { name: "Sort keys" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sort Keys" })).not.toBeInTheDocument();
   });
 
   it("JSON: Sort keys works without localStorage", () => {
@@ -291,7 +291,7 @@ describe("QuickLook", () => {
     });
     mount({ column: col("doc", "json"), value: { t: "json", v: '{"b":1,"a":2}' } });
     expect(get).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Sort keys" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sort Keys" }));
     expect(editor().state.doc.toString()).toBe('{\n  "a": 2,\n  "b": 1\n}');
   });
 

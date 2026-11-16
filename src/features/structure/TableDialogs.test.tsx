@@ -78,7 +78,7 @@ describe("sidebar table dialogs", () => {
       table: byName(t, "audit_log"),
     }));
     useTabsStore.getState().openTable(connectionId, { schema: "public", name: "audit_log" });
-    const drop = screen.getByRole("button", { name: "Drop table" });
+    const drop = screen.getByRole("button", { name: "Drop Table" });
     expect(drop).toBeDisabled();
     expect(screen.getByText(/CASCADE/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Type audit_log to confirm"), {
@@ -100,7 +100,7 @@ describe("sidebar table dialogs", () => {
     fireEvent.change(screen.getByLabelText("Type active_users to confirm"), {
       target: { value: "active_users" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Drop view" }));
+    fireEvent.click(screen.getByRole("button", { name: "Drop View" }));
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
     expect(apply.mock.calls[0]?.[2]).toEqual([
       { op: "rawSql", sql: 'DROP VIEW "public"."active_users"' },
@@ -178,7 +178,7 @@ describe("sidebar table dialogs", () => {
       .mockImplementation(() => new Promise((resolve) => (finish = resolve)));
     await setup(() => ({ kind: "create", schema: "public" }));
     fireEvent.change(screen.getByLabelText("Table name"), { target: { value: "notes" } });
-    fireEvent.click(screen.getByRole("button", { name: /Create table/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Create Table/ }));
     await waitFor(() => expect(apply).toHaveBeenCalled());
     const dialog = screen.getByRole("dialog");
     fireEvent.keyDown(dialog, { key: "Escape" });
@@ -192,11 +192,11 @@ describe("sidebar table dialogs", () => {
 
   it("New table validates, previews the SQL and creates the table", async () => {
     const { names } = await setup(() => ({ kind: "create", schema: "public" }));
-    fireEvent.click(screen.getByRole("button", { name: /Create table/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Create Table/ }));
     expect(await screen.findByText("Table name is required")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Table name"), { target: { value: "notes" } });
-    fireEvent.click(screen.getByRole("button", { name: /Add column/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Add Column/ }));
     fireEvent.change(screen.getByLabelText("Column 2 name"), { target: { value: "body" } });
     fireEvent.click(screen.getByRole("button", { name: /Preview SQL/ }));
     await waitFor(() =>
@@ -205,7 +205,7 @@ describe("sidebar table dialogs", () => {
         { normalizeWhitespace: true },
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: /Create table/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Create Table/ }));
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Created table notes"));
     expect(await names()).toContain("notes");
     expect(useTabsStore.getState().tabs[0]).toMatchObject({

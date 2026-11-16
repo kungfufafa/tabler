@@ -1,3 +1,4 @@
+import { EmptyState } from "@/components/EmptyState";
 import { Kbd } from "@/components/Kbd";
 import { QuietLoading } from "@/components/QuietLoading";
 import { LacksFieldsContext } from "@/features/datagrid/lacksFields";
@@ -36,11 +37,11 @@ function ToolTabBody({ tab, focused }: { tab: Extract<Tab, { kind: "tool" }>; fo
   const def = getToolTab(tab.tool);
   if (!def)
     return (
-      <div
-        data-slot="tool-tab-missing"
-        className="text-muted-foreground flex h-full items-center justify-center p-6 text-xs"
-      >
-        This tab cannot be shown ({tab.tool}).
+      <div data-slot="tool-tab-missing" className="h-full">
+        <EmptyState
+          title="This tab cannot be shown"
+          description={`Nothing in this build opens the “${tab.tool}” tool.`}
+        />
       </div>
     );
   const Component = def.component;

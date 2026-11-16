@@ -36,7 +36,7 @@ function useSize(ref: RefObject<HTMLElement | null>): { w: number; h: number } |
 
 /**
  * A board chart (bar, line or pie) of the object's result, titled with the object's title, in
- * the app's chart style (`features/charts`): tooltip on hover, the object's series colours.
+ * the app's chart style (`features/charts`): tooltip on hover, the object's series colors.
  * `sceneRef` gets the drawn scene (Copy as SVG / Export PNG…).
  */
 export function BoardChart({
@@ -151,7 +151,7 @@ export function BoardChart({
       </div>
       {notes.length > 0 && (
         <p
-          className="text-muted-foreground shrink-0 truncate px-3 pb-1.5 text-[10px]"
+          className="text-muted-foreground shrink-0 truncate px-3 pb-1.5 text-xs"
           title={notes.join(" ")}
         >
           {notes.join(" ")}

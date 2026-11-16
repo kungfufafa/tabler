@@ -130,7 +130,7 @@ function SafeModeLock() {
             data-level={level}
             data-read-only={readOnly}
             disabled={!active}
-            className="text-muted-foreground hover:text-foreground data-[level=alert]:text-foreground data-[level=alertNonSelect]:text-foreground data-[level=safe]:text-brand data-[level=safeNonSelect]:text-brand aria-expanded:bg-muted aria-expanded:text-foreground relative size-7 rounded-md transition-colors"
+            className="text-muted-foreground hover:bg-accent hover:text-foreground dark:hover:bg-accent data-[level=alert]:text-foreground data-[level=alertNonSelect]:text-foreground data-[level=safe]:text-brand data-[level=safeNonSelect]:text-brand aria-expanded:bg-accent aria-expanded:text-foreground relative transition-colors"
           >
             <Icon className="size-3.5" />
             {readOnly && (
@@ -151,7 +151,7 @@ function SafeModeLock() {
           openedDialog.current = false;
         }}
       >
-        <DropdownMenuLabel className="text-muted-foreground truncate text-[11px] font-normal">
+        <DropdownMenuLabel className="truncate">
           Safe mode{profile ? ` · ${profile.name}` : ""}
         </DropdownMenuLabel>
         <DropdownMenuRadioGroup
@@ -167,12 +167,10 @@ function SafeModeLock() {
               className="items-start py-1.5"
             >
               <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-[13px] leading-4">
+                <span className="leading-4">
                   {o.label} <span className="text-muted-foreground">· {o.summary}</span>
                 </span>
-                <span className="text-muted-foreground text-[11px] leading-snug">
-                  {o.description}
-                </span>
+                <span className="text-muted-foreground text-xs">{o.description}</span>
               </span>
             </DropdownMenuRadioItem>
           ))}
@@ -181,13 +179,13 @@ function SafeModeLock() {
         {readOnly && (
           <p
             data-slot="read-only-note"
-            className="text-muted-foreground flex items-start gap-1.5 px-1.5 py-1 text-[11px] leading-snug"
+            className="text-muted-foreground flex items-start gap-1.5 px-1.5 py-1 text-xs"
           >
             <Lock className="text-brand mt-px size-3 shrink-0" aria-hidden />
             Read-only connection: edits and DDL are disabled.
           </p>
         )}
-        <DropdownMenuItem disabled={!profile} onSelect={editConnection} className="text-[13px]">
+        <DropdownMenuItem disabled={!profile} onSelect={editConnection}>
           Edit Connection…
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -206,7 +204,7 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
     case "sidebar":
       return (
         <ToolbarButton label="Toggle sidebar" action="ui.toggle-sidebar" text={caption}>
-          <PanelLeft className="size-4" />
+          <PanelLeft className="size-3.5" />
         </ToolbarButton>
       );
     case "actions":
@@ -222,11 +220,11 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
           <ToolbarTip label="New query" action="tab.new-query">
             <Button
               variant="ghost"
-              size="xs"
+              size="sm"
               aria-label="New query"
               disabled={!hasConnection}
               onClick={() => void actions.run("tab.new-query")}
-              className="text-muted-foreground hover:text-foreground h-7 rounded-md px-2 text-xs font-medium transition-colors"
+              className="text-muted-foreground hover:bg-accent hover:text-foreground dark:hover:bg-accent px-2 text-xs transition-colors"
             >
               SQL
             </Button>
@@ -369,7 +367,7 @@ export function Toolbar({ launcher }: { launcher: boolean }) {
       >
         <span
           data-tauri-drag-region
-          className="text-muted-foreground cursor-default text-[13px] font-semibold select-none"
+          className="text-muted-foreground cursor-default text-sm font-medium select-none"
         >
           Tabler
         </span>

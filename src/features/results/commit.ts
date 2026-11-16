@@ -79,7 +79,7 @@ export function planResultCommit(tabId: string): ResultPlan | null {
   if (editability?.kind !== "editable")
     return {
       ok: false,
-      problem: "These changes can't be committed",
+      problem: "These changes cannot be committed",
       detail: "The result's source table is no longer known. Discard them.",
     };
   const target = stagedTargetOf(st, resultId);

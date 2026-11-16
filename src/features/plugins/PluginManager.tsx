@@ -1,4 +1,5 @@
 import { QuietStatus } from "@/components/QuietLoading";
+import { SectionLabel } from "@/components/SectionLabel";
 import { FolderOpen, Puzzle, RotateCw, Trash2, Upload } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
@@ -11,7 +12,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -77,14 +77,14 @@ function PluginRow({
         if (e.key === "Enter" || e.key === " ") onSelect();
       }}
       className={cn(
-        "flex cursor-default items-start gap-2.5 rounded-md px-2.5 py-2 outline-none",
-        "focus-visible:ring-ring/50 focus-visible:ring-2",
-        selected ? "bg-accent text-accent-foreground" : "hover:bg-muted/60",
+        "flex cursor-default items-start gap-2.5 rounded-md px-2.5 py-2 transition-colors outline-none",
+        "focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:ring-inset",
+        selected ? "bg-brand-soft" : "hover:bg-row-hover",
       )}
     >
       <Puzzle
         aria-hidden
-        className={cn("mt-0.5 size-4 shrink-0", enabled ? "text-brand" : "text-muted-foreground")}
+        className={cn("mt-px size-3.5 shrink-0", enabled ? "text-brand" : "text-muted-foreground")}
       />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-xs">
@@ -94,15 +94,13 @@ function PluginRow({
             <span className="text-muted-foreground truncate">· {plugin.author}</span>
           )}
           {plugin.builtin && (
-            <Badge variant="secondary" className="h-4 shrink-0 px-1.5 text-[10px]">
+            <span className="border-border text-muted-foreground inline-flex h-4 shrink-0 items-center rounded-sm border px-1 text-[10px] leading-none font-medium">
               Built-in
-            </Badge>
+            </span>
           )}
         </div>
         {plugin.description && (
-          <p className="text-muted-foreground mt-0.5 line-clamp-2 text-[11px]">
-            {plugin.description}
-          </p>
+          <p className="text-muted-foreground mt-0.5 line-clamp-2 text-xs">{plugin.description}</p>
         )}
         <ul className="mt-1 flex flex-wrap gap-1">
           {plugin.commands.map((c, i) => {
@@ -110,11 +108,11 @@ function PluginRow({
             return (
               <li
                 key={`${c.name}-${i}`}
-                className="bg-muted text-muted-foreground inline-flex items-center gap-1 rounded px-1.5 py-px text-[10px]"
+                className="border-border text-muted-foreground inline-flex h-4 items-center gap-1 rounded-sm border px-1 text-[10px] leading-none font-medium"
                 title={`Offered in: ${c.contexts.map((x) => CONTEXT_LABELS[x] ?? x).join(", ")}`}
               >
-                <span className="text-foreground/80">{c.name}</span>
-                {key && <span className="font-mono">{formatCombo(key)}</span>}
+                <span className="text-foreground">{c.name}</span>
+                {key && <span>{formatCombo(key)}</span>}
               </li>
             );
           })}
@@ -159,7 +157,7 @@ export function PluginManager() {
   return (
     <>
       <Dialog open={open} onOpenChange={(o) => !o && closePluginManager()}>
-        <DialogContent className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col gap-3 sm:max-w-[min(48rem,calc(100%-2rem))]">
+        <DialogContent className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(48rem,calc(100%-2rem))]">
           <DialogHeader>
             <DialogTitle className="text-sm">Plugins</DialogTitle>
             <DialogDescription className="text-xs">
@@ -173,14 +171,12 @@ export function PluginManager() {
             role="listbox"
             aria-label="Plugins"
           >
-            <h3 className="text-muted-foreground mb-1 px-1 text-[11px] font-medium tracking-wide uppercase">
-              Built-in
-            </h3>
+            <SectionLabel className="mb-1 px-1">Built-in</SectionLabel>
             {builtin.map(row)}
-            <h3 className="text-muted-foreground mt-3 mb-1 flex items-center gap-1.5 px-1 text-[11px] font-medium tracking-wide uppercase">
+            <SectionLabel className="mt-3 mb-1 flex items-center gap-1.5 px-1">
               Installed
               {loading && <QuietStatus />}
-            </h3>
+            </SectionLabel>
             {installed.map(row)}
             {installed.length === 0 && !loading && (
               <p className="text-muted-foreground px-2.5 py-2 text-xs">
@@ -191,29 +187,25 @@ export function PluginManager() {
             {error && <p className="text-error px-2.5 py-1 text-xs">{error}</p>}
             {(list?.invalid ?? []).map((bad) => (
               <div key={bad.folder} className="px-2.5 py-1.5 text-xs">
-                <div className="text-muted-foreground truncate font-mono text-[11px]">
-                  {bad.folder}
-                </div>
+                <div className="text-muted-foreground truncate font-mono">{bad.folder}</div>
                 <div className="text-error">{bad.error}</div>
               </div>
             ))}
-            <h3 className="text-muted-foreground mt-3 mb-1 px-1 text-[11px] font-medium tracking-wide uppercase">
-              Built into Tabler
-            </h3>
+            <SectionLabel className="mt-3 mb-1 px-1">Built into Tabler</SectionLabel>
             {BUILTIN_FEATURES.map((f) => (
               <div key={f.name} className="px-2.5 py-1.5 text-xs">
                 <span className="font-medium">{f.name}</span>
                 <span className="text-muted-foreground"> — {f.description} </span>
-                <span className="text-muted-foreground italic">({f.where})</span>
+                <span className="text-muted-foreground">({f.where})</span>
               </div>
             ))}
           </div>
           {list && (
-            <p className="text-muted-foreground truncate font-mono text-[10px]" title={list.dir}>
+            <p className="text-muted-foreground truncate font-mono text-xs" title={list.dir}>
               {list.dir}
             </p>
           )}
-          <DialogFooter className="flex-row items-center gap-1.5 sm:justify-between">
+          <DialogFooter className="items-center sm:justify-between">
             <div className="flex flex-wrap items-center gap-1.5">
               <Button size="sm" variant="outline" onClick={() => void installPluginFromFolder()}>
                 <Upload /> Install from Folder…
@@ -242,14 +234,15 @@ export function PluginManager() {
       <AlertDialog open={removing !== null} onOpenChange={(o) => !o && setRemoving(null)}>
         <AlertDialogContent className="data-[size=default]:sm:max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove “{removing?.name}”?</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogTitle className="text-sm">Remove “{removing?.name}”?</AlertDialogTitle>
+            <AlertDialogDescription className="text-xs">
               Its folder is deleted from the Plugins folder and its commands leave the menus.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
             <AlertDialogAction
+              size="sm"
               variant="destructive"
               onClick={() => {
                 const plugin = removing;

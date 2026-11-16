@@ -43,15 +43,15 @@ function Body({ prompt }: { prompt: PluginPrompt }) {
     case "alert":
       return (
         <AlertDialogHeader>
-          <AlertDialogTitle>{prompt.title || prompt.plugin}</AlertDialogTitle>
+          <AlertDialogTitle className="text-sm">{prompt.title || prompt.plugin}</AlertDialogTitle>
           <AlertDialogDescription asChild>
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2 text-xs">
               {prompt.message && (
                 <p className="max-h-[50dvh] overflow-y-auto text-xs break-words whitespace-pre-wrap">
                   {prompt.message}
                 </p>
               )}
-              <p className="text-muted-foreground text-[11px]">From the plugin “{prompt.plugin}”</p>
+              <p className="text-muted-foreground">From the plugin “{prompt.plugin}”</p>
             </div>
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -59,8 +59,9 @@ function Body({ prompt }: { prompt: PluginPrompt }) {
     case "permission":
       return (
         <AlertDialogHeader>
-          <AlertDialogTitle className="flex items-center gap-2">
-            <ShieldAlert className="text-warning size-4" /> Enable “{prompt.plugin.name}”?
+          <AlertDialogTitle className="flex items-center gap-2 text-sm">
+            <ShieldAlert aria-hidden className="text-warning size-4 shrink-0" /> Enable “
+            {prompt.plugin.name}”?
           </AlertDialogTitle>
           <AlertDialogDescription asChild>
             <div className="flex flex-col gap-2 text-xs">
@@ -84,14 +85,14 @@ function Body({ prompt }: { prompt: PluginPrompt }) {
     case "openUrl":
       return (
         <AlertDialogHeader>
-          <AlertDialogTitle>Open this link?</AlertDialogTitle>
+          <AlertDialogTitle className="text-sm">Open this link?</AlertDialogTitle>
           <AlertDialogDescription asChild>
             <div className="flex flex-col gap-2 text-xs">
               <p>The plugin “{prompt.plugin}” wants to open:</p>
-              <p className="bg-muted text-foreground rounded px-2 py-1 font-mono text-[11px] break-all">
+              <p className="bg-muted text-foreground rounded px-2 py-1 font-mono break-all">
                 {prompt.url}
               </p>
-              <p className="text-muted-foreground text-[11px]">
+              <p className="text-muted-foreground">
                 A link's address can carry data from your database. Tabler will not ask again for
                 this plugin.
               </p>
@@ -122,11 +123,11 @@ export function PluginPrompts() {
         <Body prompt={prompt} />
         <AlertDialogFooter>
           {prompt.kind !== "alert" && (
-            <AlertDialogCancel onClick={() => answerPluginPrompt(prompt.id, false)}>
+            <AlertDialogCancel size="sm" onClick={() => answerPluginPrompt(prompt.id, false)}>
               Cancel
             </AlertDialogCancel>
           )}
-          <AlertDialogAction onClick={() => answerPluginPrompt(prompt.id, true)}>
+          <AlertDialogAction size="sm" onClick={() => answerPluginPrompt(prompt.id, true)}>
             {CONFIRM[prompt.kind]}
           </AlertDialogAction>
         </AlertDialogFooter>

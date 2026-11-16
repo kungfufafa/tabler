@@ -26,9 +26,9 @@ export function AppMenuButton() {
           const r = e.currentTarget.getBoundingClientRect();
           void ipc.menu.popup(r.left, r.bottom + 2);
         }}
-        className="text-muted-foreground hover:text-foreground size-6.5"
+        className="text-muted-foreground hover:bg-accent hover:text-foreground dark:hover:bg-accent aria-expanded:bg-accent transition-colors"
       >
-        <EllipsisVertical className="size-4" />
+        <EllipsisVertical className="size-3.5" />
       </Button>
     </ToolbarTip>
   );
@@ -61,7 +61,7 @@ function useMaximized(): boolean {
 }
 
 const CAPTION =
-  "text-foreground/80 hover:bg-muted hover:text-foreground flex h-full w-11 items-center justify-center transition-colors outline-none focus-visible:bg-muted";
+  "text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring/50 flex h-full w-11 items-center justify-center transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset";
 
 /**
  * Minimize, maximize / restore and close at the right end of the toolbar (Windows, no native
@@ -94,7 +94,7 @@ export function WindowControls({
         type="button"
         aria-label={maximized ? "Restore" : "Maximize"}
         disabled={!maximizable}
-        className={cn(CAPTION, "disabled:text-foreground/30 disabled:hover:bg-transparent")}
+        className={cn(CAPTION, "disabled:opacity-50 disabled:hover:bg-transparent")}
         onClick={() => run((w) => w.toggleMaximize())}
       >
         {maximized ? (
@@ -106,7 +106,7 @@ export function WindowControls({
       <button
         type="button"
         aria-label="Close"
-        className={cn(CAPTION, "hover:bg-[#c42b1c] hover:text-white focus-visible:bg-[#c42b1c]")}
+        className={cn(CAPTION, "hover:bg-[#c42b1c] hover:text-white")}
         onClick={() => run((w) => w.close())}
       >
         <X className="size-4" strokeWidth={1.25} />

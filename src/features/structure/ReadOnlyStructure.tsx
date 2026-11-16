@@ -1,4 +1,5 @@
-import { QuietStatus } from "@/components/QuietLoading";
+import { QuietLoading } from "@/components/QuietLoading";
+import { SectionLabel } from "@/components/SectionLabel";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, SquareTerminal } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -16,9 +17,7 @@ import { tableOptionRows } from "./tableOptions";
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section aria-label={title} className="flex flex-col gap-1">
-      <h3 className="text-muted-foreground text-[11px] font-medium tracking-wide uppercase">
-        {title}
-      </h3>
+      <SectionLabel>{title}</SectionLabel>
       {children}
     </section>
   );
@@ -87,7 +86,7 @@ export function ReadOnlyStructure({
     <div className="flex h-full min-h-0 flex-col" data-slot="read-only-structure">
       <div className="min-h-0 flex-1 overflow-auto p-3">
         {meta.isPending ? (
-          <QuietStatus />
+          <QuietLoading className="bg-transparent" />
         ) : meta.isError ? (
           <EmptyState
             title={`Could not load the ${noun.toLowerCase()}`}
@@ -118,9 +117,7 @@ export function ReadOnlyStructure({
                 />
               </Section>
             )}
-            {indexesOnly && m.indexes.length === 0 && (
-              <p className="text-muted-foreground text-xs">No indexes.</p>
-            )}
+            {indexesOnly && m.indexes.length === 0 && <EmptyState title="No indexes" />}
             {m.indexes.length > 0 && (
               <Section title="Indexes">
                 <Table

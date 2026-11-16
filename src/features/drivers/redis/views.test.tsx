@@ -60,7 +60,7 @@ describe("the inspector", () => {
     );
     expect(screen.getByTestId("redis-key")).toHaveTextContent("greeting");
     fireEvent.change(screen.getByLabelText("Value"), { target: { value: "hi there" } });
-    fireEvent.click(screen.getByRole("button", { name: "Stage value" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stage Value" }));
     expect(onStage).toHaveBeenCalledWith({ value: text("hi there") });
     fireEvent.change(screen.getByLabelText("TTL"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Stage TTL" }));
@@ -91,7 +91,7 @@ describe("the inspector", () => {
       <RedisInspector connectionId="c" table={table} columns={[]} row={doc} onStage={onStage} />,
     );
     fireEvent.change(screen.getByLabelText("Value"), { target: { value: "{oops" } });
-    expect(screen.getByRole("button", { name: "Stage value" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stage Value" })).toBeDisabled();
     second.unmount();
     render(<RedisInspector connectionId="c" table={table} columns={[]} row={stringRow()} />);
     expect(screen.queryByRole("button", { name: /^Stage/ })).toBeNull();
@@ -145,7 +145,7 @@ describe("the inspector", () => {
       "keyPage",
       { db: 3, key: text("user:1"), type: "hash", cursor: null, count: 100 },
     ]);
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load More" }));
     expect(await screen.findByText("free")).toBeInTheDocument();
     expect(calls[1]?.[1]).toMatchObject({ cursor: "17" });
     fireEvent.click(screen.getByRole("button", { name: "Delete name" }));
@@ -181,7 +181,7 @@ describe("the inspector", () => {
     );
     await screen.findByText("plan");
     fireEvent.change(screen.getByLabelText("Member"), { target: { value: "x" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Member" }));
     await waitFor(() => expect(guard).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 0));
     expect(methods).toEqual(["keyPage", "previewEdits"]);

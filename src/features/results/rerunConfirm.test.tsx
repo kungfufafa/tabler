@@ -119,7 +119,7 @@ describe("re-running a query whose results hold uncommitted edits", () => {
     expect(pendingForTab(useResultsStore.getState(), TAB)).toBe(1);
   });
 
-  it("Discard & Run drops the edits quietly and runs", async () => {
+  it("Discard and Run drops the edits quietly and runs", async () => {
     const run = vi.spyOn(ipc.query, "run").mockResolvedValue([]);
     const done = runQuery(TAB, "current");
     await flush();

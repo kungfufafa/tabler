@@ -67,7 +67,7 @@ export function MssqlFields({ form }: KindFieldsProps) {
         id={`${uid}-${key}`}
         {...register(`driverParams.${key}` as Path<ConnectionFormValues>)}
         placeholder={placeholder}
-        className="font-mono"
+        className="font-mono text-sm"
         autoComplete="off"
         spellCheck={false}
       />
@@ -142,7 +142,7 @@ export function MssqlFields({ form }: KindFieldsProps) {
           onChange={(e) => setPasted(e.target.value)}
           onBlur={(e) => takeString(e.target.value)}
           placeholder="Server=tcp:db.example.com,1433;Database=shop;User ID=app"
-          className="font-mono"
+          className="font-mono text-sm"
           autoComplete="off"
           spellCheck={false}
           aria-label="Connection string"

@@ -1,10 +1,11 @@
 import { FileDown, Filter, Plus } from "lucide-react";
 import type { ReactNode } from "react";
+import { QuietStatus } from "@/components/QuietLoading";
 import { Button } from "@/components/ui/button";
 import { formatCount, formatDuration } from "@/lib/format/time";
 import type { ColumnMeta, RowCount } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { BarIconButton, BarSeparator, BarTooltip, BottomBarFrame } from "./BarParts";
+import { BAR_HOVER, BarIconButton, BarSeparator, BarTooltip, BottomBarFrame } from "./BarParts";
 import { ColumnsMenu } from "./ColumnsMenu";
 import { Pagination, type CursorPaging, type PageChange } from "./Pagination";
 import type { DefaultOrder } from "./tableViewMemory";
@@ -68,7 +69,7 @@ function RowSummary({
               ) : (
                 <button
                   type="button"
-                  className="hover:text-foreground focus-visible:outline-ring rounded-sm underline decoration-dotted underline-offset-2"
+                  className="hover:text-foreground focus-visible:ring-ring/50 rounded-sm underline decoration-dotted underline-offset-2 transition-colors outline-none focus-visible:ring-2"
                   title="Estimated — click for an exact count"
                   onClick={onCountExact}
                 >
@@ -84,7 +85,7 @@ function RowSummary({
       )}
       {loading ? (
         // Nothing to look at while a page loads: the rows and the time appear when it is in.
-        <span role="status" aria-label="Loading" className="sr-only" />
+        <QuietStatus />
       ) : (
         durationMs !== null && (
           <span className="text-muted-foreground shrink-0 @max-xl:hidden">
@@ -163,10 +164,13 @@ export function TableBottomBar(p: TableBottomBarProps) {
           aria-label="Add row"
           disabled={!p.canAddRow}
           onClick={p.onAddRow}
-          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 transition-colors @max-md:px-1"
+          className={cn(
+            "text-muted-foreground hover:text-foreground transition-colors @max-md:px-1",
+            BAR_HOVER,
+          )}
         >
           <Plus />
-          <span className="@max-md:hidden">Add row</span>
+          <span className="@max-md:hidden">Add Row</span>
         </Button>
       </BarTooltip>
       <div className="flex min-w-0 flex-1 justify-center px-1">
@@ -192,17 +196,18 @@ export function TableBottomBar(p: TableBottomBarProps) {
           disabled={p.filterable === false}
           onClick={p.onToggleFilters}
           className={cn(
-            "text-muted-foreground hover:text-foreground h-6 gap-1 px-2 transition-colors @max-sm:px-1",
-            p.filtersVisible && "bg-accent text-foreground",
+            "text-muted-foreground hover:text-foreground transition-colors @max-sm:px-1",
+            BAR_HOVER,
+            // A pressed toggle is a selection (docs/ui-conventions.md, State tokens).
+            p.filtersVisible &&
+              "bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand dark:hover:bg-brand-soft",
             filtered && "text-brand hover:text-brand",
           )}
         >
           <Filter />
           <span className="@max-3xl:hidden">Filters</span>
           {filtered && (
-            <span className="text-[11px] leading-4 font-medium tabular-nums">
-              {p.activeFilters}
-            </span>
+            <span className="text-xs leading-4 font-medium tabular-nums">{p.activeFilters}</span>
           )}
         </Button>
       </BarTooltip>

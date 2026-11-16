@@ -39,9 +39,9 @@ export function Row({
       <div className="flex min-w-0 flex-col gap-1">
         {children}
         {error ? (
-          <p className="text-error text-[11px]">{error}</p>
+          <p className="text-error text-xs leading-4">{error}</p>
         ) : hint ? (
-          <p className="text-muted-foreground text-[11px]">{hint}</p>
+          <p className="text-muted-foreground text-xs leading-4">{hint}</p>
         ) : null}
       </div>
     </>

@@ -101,7 +101,7 @@ describe("Diagram", () => {
     const user = userEvent.setup();
     const { dialog } = await setup();
     clickCard(dialog, "posts");
-    const toggle = within(dialog).getByRole("button", { name: /Selected \+ Neighbours/ });
+    const toggle = within(dialog).getByRole("button", { name: /Selected \+ Neighbors/ });
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     expect(cards(dialog).sort()).toEqual(["post_tags", "posts", "users"]);
@@ -114,7 +114,7 @@ describe("Diagram", () => {
     const { dialog } = await setup([{ schema: "public", name: "tags" }]);
     expect(cards(dialog).sort()).toEqual(["post_tags", "tags"]);
     expect(card(dialog, "tags")).toHaveAttribute("data-selected", "true");
-    expect(within(dialog).getByRole("button", { name: /Selected \+ Neighbours/ })).toHaveAttribute(
+    expect(within(dialog).getByRole("button", { name: /Selected \+ Neighbors/ })).toHaveAttribute(
       "aria-pressed",
       "true",
     );

@@ -1,14 +1,17 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, FileUp } from "lucide-react";
+import { FileUp } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Kbd } from "@/components/Kbd";
+import { FormError } from "@/components/FormError";
+import { KbdHint } from "@/components/KbdHint";
+import { QuietStatus } from "@/components/QuietLoading";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -72,8 +75,8 @@ const isTableKind = (kind: string) =>
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex min-w-0 items-center gap-2">
-      <span className="text-muted-foreground w-20 shrink-0 text-xs">{label}</span>
+    <div className="flex min-w-0 items-center gap-3">
+      <span className="text-muted-foreground w-[5.5rem] shrink-0 text-right text-xs">{label}</span>
       <div className="flex min-w-0 flex-1 items-center gap-2">{children}</div>
     </div>
   );
@@ -94,7 +97,7 @@ function Toggle({
     <label
       className={cn(
         "flex h-7 cursor-default items-center gap-2 text-xs whitespace-nowrap",
-        disabled && "text-muted-foreground opacity-60",
+        disabled && "opacity-50",
       )}
     >
       <Checkbox
@@ -124,11 +127,7 @@ function Choice<T extends string>({
 }) {
   return (
     <Select value={value} onValueChange={(v) => onChange(v as T)} disabled={disabled}>
-      <SelectTrigger
-        size="sm"
-        aria-label={label}
-        className={cn("bg-surface h-7 text-xs", className)}
-      >
+      <SelectTrigger size="sm" aria-label={label} className={cn("bg-surface text-xs", className)}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -396,14 +395,14 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
       if (!report.cancelled)
         void notifyInBackground(
           report.failure
-            ? { title: `${kindLabel} import failed`, body: report.failure.message }
+            ? { title: `Could not import the ${kindLabel} file`, body: report.failure.message }
             : { title: `Imported ${rows}`, body: `${data.fileName} → ${table.name}` },
         );
       if (report.failure) {
         const notes = report.notes.length > 0 ? `. ${report.notes.join(" ")}` : "";
         setFailure({ text: failureText(report.failure) + notes, imported: report.rowsImported });
       } else if (report.cancelled) {
-        toast.message("Import cancelled", {
+        toast.message("Import canceled", {
           description:
             report.rowsImported > 0
               ? `${rows} were already imported into ${table.name}.`
@@ -428,7 +427,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
       }
     } catch (e) {
       const message = toIpcError(e).message;
-      void notifyInBackground({ title: `${kindLabel} import failed`, body: message });
+      void notifyInBackground({ title: `Could not import the ${kindLabel} file`, body: message });
       setStartError(message);
     } finally {
       setRun(null);
@@ -468,7 +467,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
       >
         <DialogHeader className="border-border gap-1 border-b px-4 py-3 pr-12">
           <DialogTitle className="flex items-center gap-2 text-sm">
-            <FileUp className="text-brand size-4" />
+            <FileUp aria-hidden className="text-brand size-4 shrink-0" />
             Import {kindLabel}
           </DialogTitle>
           <DialogDescription className="flex min-w-0 items-center gap-1.5 text-xs">
@@ -501,7 +500,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                   onChange={(e) => setNewName(e.target.value)}
                   spellCheck={false}
                   autoComplete="off"
-                  className="h-7 min-w-0 flex-1 font-mono text-xs"
+                  className="h-7 min-w-0 flex-1 rounded-md font-mono text-xs md:text-xs"
                 />
               ) : (
                 <Select
@@ -514,7 +513,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                   <SelectTrigger
                     size="sm"
                     aria-label="Table"
-                    className="bg-surface h-7 min-w-0 flex-1 font-mono text-xs"
+                    className="bg-surface min-w-0 flex-1 font-mono text-xs"
                   >
                     <SelectValue placeholder="Choose a table" />
                   </SelectTrigger>
@@ -606,23 +605,18 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
 
         <div className="min-h-40 flex-1 overflow-auto" data-testid="csv-preview">
           {preview.isError ? (
-            <div role="alert" className="text-error flex items-start gap-1.5 p-4 text-xs">
-              <CircleAlert className="mt-px size-3.5 shrink-0" />
-              {preview.error.message}
-            </div>
+            <FormError className="p-4">{preview.error.message}</FormError>
           ) : !data ? (
-            <div className="text-muted-foreground flex items-center gap-2 p-4 text-xs">
-              <span className="sr-only">Reading the file…</span>
-            </div>
+            <QuietStatus>Reading the file</QuietStatus>
           ) : (
             <table className="w-max min-w-full border-separate border-spacing-0 text-xs">
               <thead className="bg-surface sticky top-0 z-10">
                 <tr>
-                  <th className="border-border bg-surface-2 sticky left-0 w-10 border-r border-b" />
+                  <th className="border-gridline bg-surface-2 sticky left-0 w-10 border-r border-b" />
                   {Array.from({ length: width }, (_, i) => (
                     <th
                       key={i}
-                      className="border-border min-w-36 border-r border-b px-1.5 py-1 text-left align-top font-normal"
+                      className="border-gridline min-w-36 border-r border-b px-1.5 py-1 text-left align-top font-normal"
                     >
                       {creating ? (
                         <div className="flex flex-col gap-1">
@@ -654,7 +648,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                                 )
                               }
                               spellCheck={false}
-                              className="h-6 min-w-0 flex-1 font-mono text-xs"
+                              className="h-6 min-w-0 flex-1 rounded-md font-mono text-xs md:text-xs"
                             />
                           </div>
                           <Choice<ImportType>
@@ -683,7 +677,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                             aria-label={`Target of column ${i + 1}`}
                             className={cn(
                               "bg-surface h-6 w-full font-mono text-xs",
-                              mapping[i] == null && "text-muted-foreground italic",
+                              mapping[i] == null && "text-null italic",
                             )}
                           >
                             <SelectValue />
@@ -715,8 +709,8 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
               </thead>
               <tbody>
                 {data.rows.map((row, r) => (
-                  <tr key={r} className="hover:bg-accent/40">
-                    <td className="border-border bg-surface-2 text-muted-foreground sticky left-0 border-r border-b px-1.5 text-right tabular-nums">
+                  <tr key={r} className="hover:bg-row-hover">
+                    <td className="border-gridline bg-surface-2 text-muted-foreground sticky left-0 border-r border-b px-1.5 text-right tabular-nums">
                       {r + 1}
                     </td>
                     {Array.from({ length: width }, (_, i) => {
@@ -726,13 +720,13 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                         <td
                           key={i}
                           className={cn(
-                            "border-border max-w-56 truncate border-r border-b px-1.5 py-0.5 font-mono",
-                            skippedCol && "text-muted-foreground/60",
+                            "border-gridline max-w-56 truncate border-r border-b px-1.5 py-0.5 font-mono",
+                            skippedCol && "text-muted-foreground",
                           )}
                           title={v ?? undefined}
                         >
                           {v === null && (json || emptyAsNull) ? (
-                            <span className="text-muted-foreground italic">NULL</span>
+                            <span className="text-null italic">NULL</span>
                           ) : (
                             (v ?? "")
                           )}
@@ -746,7 +740,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
           )}
         </div>
 
-        <div className="border-border bg-surface-2/60 flex min-h-12 shrink-0 items-center gap-2 rounded-b-xl border-t px-4 py-2">
+        <DialogFooter className="m-0 shrink-0 flex-row items-center">
           <div className="min-w-0 flex-1">
             {run ? (
               <div role="status" aria-live="polite" className="flex min-w-0 flex-col gap-1">
@@ -757,35 +751,29 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                     {progress && progress.rowsImported > 0
                       ? ` · ${formatCount(progress.rowsImported)} imported`
                       : ""}
-                    {run.cancelling ? " · cancelling…" : ""}
+                    {run.cancelling ? " · canceling…" : ""}
                   </span>
                 </div>
                 <div className="bg-surface-2 h-1 w-56 overflow-hidden rounded-full">
                   <div
-                    className={cn(
-                      "bg-brand h-full rounded-full transition-[width] duration-200",
-                      pct === null && "w-0",
-                    )}
+                    className={cn("bg-brand h-full rounded-full", pct === null && "w-0")}
                     style={pct === null ? undefined : { width: `${pct}%` }}
                   />
                 </div>
               </div>
             ) : failure || startError ? (
-              <div role="alert" className="text-error flex min-w-0 items-start gap-1.5 text-xs">
-                <CircleAlert className="mt-px size-3.5 shrink-0" />
-                <span className="line-clamp-3" title={failure?.text ?? startError ?? ""}>
-                  {failure ? (
-                    <>
-                      {failure.text}.{" "}
-                      {failure.imported > 0
-                        ? `${formatCount(failure.imported)} rows of earlier chunks stay imported.`
-                        : "Nothing was imported."}
-                    </>
-                  ) : (
-                    startError
-                  )}
-                </span>
-              </div>
+              <FormError clamp title={failure?.text ?? startError ?? ""}>
+                {failure ? (
+                  <>
+                    {failure.text}.{" "}
+                    {failure.imported > 0
+                      ? `${formatCount(failure.imported)} rows of earlier chunks stay imported.`
+                      : "Nothing was imported."}
+                  </>
+                ) : (
+                  startError
+                )}
+              </FormError>
             ) : (
               <span
                 className="text-muted-foreground block truncate text-xs"
@@ -808,23 +796,20 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
               onClick={() => void cancel()}
               disabled={run.cancelling}
             >
-              Cancel import
+              Cancel Import
             </Button>
           ) : (
             <>
-              <Button type="button" variant="ghost" size="sm" onClick={close}>
+              <Button type="button" variant="outline" size="sm" onClick={close}>
                 Cancel
               </Button>
               <Button type="button" size="sm" disabled={!canImport} onClick={() => void start()}>
                 Import
-                <Kbd
-                  combo="Mod+Enter"
-                  className="border-primary-foreground/30 text-primary-foreground/80 bg-transparent"
-                />
+                <KbdHint combo="Mod+Enter" />
               </Button>
             </>
           )}
-        </div>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

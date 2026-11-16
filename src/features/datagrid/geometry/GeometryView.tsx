@@ -97,7 +97,7 @@ export function GeometryPreview({
   if (!b || g.empty)
     return (
       <div
-        className="text-muted-foreground flex items-center justify-center text-[11px] italic"
+        className="text-null flex items-center justify-center text-xs italic"
         style={{ width, height }}
       >
         {g.type} EMPTY
@@ -275,7 +275,7 @@ export function MapView({
           })}
         </g>
       </svg>
-      <div className="text-muted-foreground bg-surface/85 pointer-events-none absolute top-1.5 left-2 rounded px-1 text-[10px]">
+      <div className="text-muted-foreground bg-surface/85 pointer-events-none absolute top-1.5 left-2 rounded px-1 text-xs tabular-nums">
         {geo ? "lon ↔ · lat ↕" : "x ↔ · y ↕"}
         {g.srid !== null && ` · SRID ${g.srid}`}
         {g.dims && ` · ${g.dims}`} · {pointCount(g.shapes).toLocaleString()} pts

@@ -30,9 +30,9 @@ export function LargeFileDialog() {
   const req = live ?? last;
   return (
     <AlertDialog open={live !== null} onOpenChange={(open) => !open && answerLargeFile("cancel")}>
-      <AlertDialogContent className="gap-3 data-[size=default]:sm:max-w-md">
+      <AlertDialogContent className="data-[size=default]:sm:max-w-md">
         <AlertDialogHeader>
-          <AlertDialogTitle className="text-sm font-semibold">
+          <AlertDialogTitle className="text-sm">
             {req ? `${req.name} is ${sizeLabel(req.bytes)}` : "Large file"}
           </AlertDialogTitle>
           <AlertDialogDescription className="text-xs">
@@ -44,19 +44,19 @@ export function LargeFileDialog() {
             it in a stream.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <AlertDialogFooter className="flex-col gap-1.5 px-0 sm:flex-col sm:items-stretch">
+        <AlertDialogFooter className="flex-col sm:flex-col sm:items-stretch">
           <Button size="sm" onClick={() => answerLargeFile("head")} autoFocus>
-            Open the first {sizeLabel(HEAD_BYTES)} (read-only)
+            Open the First {sizeLabel(HEAD_BYTES)} (Read-Only)
           </Button>
           {req?.canImport && (
             <Button size="sm" variant="outline" onClick={() => answerLargeFile("import")}>
-              Import as SQL dump…
+              Import as SQL Dump…
             </Button>
           )}
           <Button size="sm" variant="outline" onClick={() => answerLargeFile("anyway")}>
-            Open anyway
+            Open Anyway
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => answerLargeFile("cancel")}>
+          <Button size="sm" variant="outline" onClick={() => answerLargeFile("cancel")}>
             Cancel
           </Button>
         </AlertDialogFooter>

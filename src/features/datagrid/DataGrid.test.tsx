@@ -294,7 +294,7 @@ describe("DataGrid with hidden / reordered columns", () => {
         { r: 1, c: 0, value: { t: "int", v: 7 } },
       ],
     });
-    expect(toast.success).toHaveBeenCalledWith("Pasted 3 cells · 1 skipped · 1 row didn't fit");
+    expect(toast.success).toHaveBeenCalledWith("Pasted 3 cells · 1 skipped · 1 row did not fit");
   });
 
   it("tells read-only tables that paste is not possible", () => {

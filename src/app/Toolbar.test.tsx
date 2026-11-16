@@ -356,7 +356,7 @@ describe("Toolbar", () => {
       "palette.open",
     ];
     const spies = ids.map(spyAction);
-    // Toggle Sidebar and Databases & SQL are palette items now (not in the default set).
+    // Toggle Sidebar and Databases and SQL are palette items now (not in the default set).
     setPref("toolbarItems", ["sidebar", "databases", "refresh", "openAnything"]);
     wrap(<Toolbar launcher={false} />);
     for (const name of ["Toggle sidebar", "Open database", "New query", "Refresh"])
@@ -557,7 +557,7 @@ describe("Toolbar", () => {
     useConnectionsStore.getState().add(info("a"));
     wrap(<Toolbar launcher={false} />);
     fireEvent.click(await screen.findByRole("button", { name: /connection details/ }));
-    const colours = await screen.findByRole("radiogroup", { name: "Connection colour" });
+    const colours = await screen.findByRole("radiogroup", { name: "Connection color" });
     expect(within(colours).getByRole("radio", { name: "green" })).toHaveAttribute(
       "aria-checked",
       "true",
@@ -575,7 +575,7 @@ describe("Toolbar", () => {
     wrap(<Toolbar launcher={false} />);
     const pill = document.querySelector("[data-slot=status-pill]") as HTMLElement;
     expect(pill).toHaveAttribute("data-state", "lost");
-    expect(pill.getAttribute("style")).toContain("var(--warning)");
+    expect(pill).toHaveClass("bg-warning/10", "border-warning/40");
     expect(pill).toHaveAccessibleName(/^Connection lost : PostgreSQL 17\.6/);
   });
 

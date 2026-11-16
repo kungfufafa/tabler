@@ -32,11 +32,7 @@ export function ContextMenuEntries({ entries }: { entries: readonly MenuEntry[] 
       case "separator":
         return <ContextMenuSeparator key={e.id} />;
       case "label":
-        return (
-          <ContextMenuLabel key={e.id} className="text-muted-foreground text-[11px]">
-            {e.label}
-          </ContextMenuLabel>
-        );
+        return <ContextMenuLabel key={e.id}>{e.label}</ContextMenuLabel>;
       case "check":
         return (
           <ContextMenuCheckboxItem
@@ -91,11 +87,7 @@ export function DropdownMenuEntries({ entries }: { entries: readonly MenuEntry[]
       case "separator":
         return <DropdownMenuSeparator key={e.id} />;
       case "label":
-        return (
-          <DropdownMenuLabel key={e.id} className="text-muted-foreground text-[11px]">
-            {e.label}
-          </DropdownMenuLabel>
-        );
+        return <DropdownMenuLabel key={e.id}>{e.label}</DropdownMenuLabel>;
       case "check":
         return (
           <DropdownMenuCheckboxItem

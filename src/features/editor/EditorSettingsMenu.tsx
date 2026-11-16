@@ -113,7 +113,7 @@ export function EditorSettingsMenu() {
               variant="ghost"
               size="icon-sm"
               aria-label="Editor settings"
-              className="text-muted-foreground hover:text-foreground data-[state=open]:bg-muted rounded-md transition-colors"
+              className="text-muted-foreground hover:text-foreground hover:bg-accent dark:hover:bg-accent aria-expanded:bg-accent data-[state=open]:bg-accent"
             >
               <Settings />
             </Button>
@@ -121,7 +121,7 @@ export function EditorSettingsMenu() {
         </TooltipTrigger>
         <TooltipContent>Editor settings</TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="start" side="top" className="w-72 text-xs">
+      <DropdownMenuContent align="start" side="top" className="w-72">
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>Font Size</DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="w-48">
@@ -202,9 +202,7 @@ export function EditorSettingsMenu() {
                 Change Query Params Regex
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-56">
-                <DropdownMenuLabel className="text-muted-foreground text-[11px] font-normal">
-                  Variables look like
-                </DropdownMenuLabel>
+                <DropdownMenuLabel>Variables look like</DropdownMenuLabel>
                 <DropdownMenuRadioGroup
                   value={syntax}
                   onValueChange={(v) => setPref("editorQueryParamsRegex", v as QueryParamSyntax)}

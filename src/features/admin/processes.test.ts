@@ -151,7 +151,7 @@ describe("process list", () => {
 
   it("sums up kills", () => {
     expect(killSummary([{ id: "1", ok: true, message: null }], "query").title).toBe(
-      "Cancelled the query of 1 process",
+      "Canceled the query of 1 process",
     );
     const mixed = killSummary(
       [

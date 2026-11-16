@@ -19,7 +19,7 @@ export interface PendingFile {
 
 /**
  * A link's raw SQL condition waiting for the user's yes (`FilterConfirmDialog`): the table opened
- * with it unchecked in the filter bar; "Apply filter" checks it.
+ * with it unchecked in the filter bar; "Apply Filter" checks it.
  */
 export interface FilterRequest {
   id: number;
@@ -47,7 +47,7 @@ let nextFilterRequest = 0;
 const filterResolvers = new Map<number, (apply: boolean) => void>();
 
 /**
- * Asks whether to apply a link's raw SQL condition; resolves with the answer (false: "Not now",
+ * Asks whether to apply a link's raw SQL condition; resolves with the answer (false: "Not Now",
  * or the request was dropped).
  */
 export function askApplyFilter(request: Omit<FilterRequest, "id">): Promise<boolean> {

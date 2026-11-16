@@ -39,7 +39,7 @@ export function LibsqlFields({ form }: KindFieldsProps) {
           id={`${uid}-url`}
           {...register("driverParams.url", { onBlur: (e) => takeSecrets(String(e.target.value)) })}
           placeholder="libsql://db-org.turso.io"
-          className="font-mono"
+          className="font-mono text-sm"
           autoComplete="off"
           spellCheck={false}
         />
@@ -65,7 +65,7 @@ export function LibsqlFields({ form }: KindFieldsProps) {
           <Input
             id={`${uid}-user`}
             {...register("user")}
-            className="font-mono"
+            className="font-mono text-sm"
             autoComplete="off"
           />
         </Row>

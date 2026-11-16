@@ -27,7 +27,7 @@ const SHRINK: Record<SegmentRole, string> = {
 };
 
 const PILL =
-  "border-border bg-surface hover:bg-accent aria-expanded:bg-accent focus-visible:ring-ring/60 flex h-8 min-w-48 max-w-160 items-center @max-3xl/toolbar:min-w-28 justify-center gap-2 overflow-hidden rounded-md border px-2 text-[12px] leading-4 outline-none transition-colors focus-visible:ring-2";
+  "border-border bg-surface hover:bg-accent aria-expanded:bg-accent focus-visible:ring-ring/50 flex h-8 min-w-48 max-w-160 items-center @max-3xl/toolbar:min-w-28 justify-center gap-2 overflow-hidden rounded-md border px-2 text-[12px] leading-4 outline-none transition-colors focus-visible:ring-2";
 
 /**
  * The toolbar's centred status pill: the active connection (tag, server, SSH / TLS, name,
@@ -75,18 +75,14 @@ export function StatusPill() {
             data-slot="status-pill"
             data-state={model.problem ?? "connected"}
             aria-label={`${text} (connection details)`}
-            className={PILL}
-            style={
-              model.problem
-                ? {
-                    backgroundColor: "color-mix(in oklab, var(--warning) 12%, var(--surface))",
-                    borderColor: "color-mix(in oklab, var(--warning) 40%, var(--border))",
-                  }
-                : undefined
-            }
+            className={cn(
+              PILL,
+              model.problem &&
+                "bg-warning/10 border-warning/40 hover:bg-warning/15 aria-expanded:bg-warning/15",
+            )}
           >
             {model.problem ? (
-              <StateIcon aria-hidden className={cn("size-4 shrink-0")} />
+              <StateIcon aria-hidden className="size-4 shrink-0" />
             ) : (
               <span
                 aria-hidden
@@ -135,7 +131,7 @@ export function StatusPill() {
           </button>
         </PopoverTrigger>
       </ToolbarTip>
-      <PopoverContent align="center" sideOffset={6} className="w-84 p-3">
+      <PopoverContent align="center" sideOffset={6} className="w-80 p-3">
         <StatusDetails
           conn={active}
           profile={profile}

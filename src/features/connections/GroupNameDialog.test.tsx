@@ -79,7 +79,7 @@ describe("GroupNameDialog: a group's own image", () => {
     const { onClose } = await renderDialog({ kind: "icon", group: "Local" });
     const dialog = await screen.findByRole("dialog", { name: "Change Icon" });
     expect(within(dialog).queryByRole("img", { name: "Group image" })).toBeNull();
-    expect(within(dialog).queryByRole("button", { name: "Remove image" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Remove Image" })).toBeNull();
 
     upload(dialog, picture("image/jpeg"));
     const preview = await within(dialog).findByRole("img", { name: "Group image" });
@@ -118,7 +118,7 @@ describe("GroupNameDialog: a group's own image", () => {
       "src",
       PNG,
     );
-    await user.click(within(dialog).getByRole("button", { name: "Remove image" }));
+    await user.click(within(dialog).getByRole("button", { name: "Remove Image" }));
     expect(within(dialog).queryByRole("img", { name: "Group image" })).toBeNull();
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());

@@ -1,3 +1,4 @@
+import { EmptyState } from "@/components/EmptyState";
 import { JsonDocumentEditor } from "@/features/documents/JsonDocumentEditor";
 import { EXTENDED_JSON, type DocumentFields } from "@/features/documents/formats";
 import type { InspectorSlotProps } from "../types";
@@ -13,9 +14,9 @@ const READ_ONLY_FIELDS = ["_id"];
 export function MongoInspector({ row, onStage }: InspectorSlotProps) {
   if (!row)
     return (
-      <p className="text-muted-foreground p-3 text-xs" data-testid="mongo-no-document">
-        Select a document to see it whole.
-      </p>
+      <div className="h-full" data-testid="mongo-no-document">
+        <EmptyState title="No document selected" description="Select a document to see it whole." />
+      </div>
     );
   return (
     <JsonDocumentEditor

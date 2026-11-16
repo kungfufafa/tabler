@@ -104,7 +104,7 @@ describe("Settings ▸ AI Assistant", () => {
     fireEvent.keyDown(server, { key: "Enter" });
     expect(getPrefs().assistantOllamaBaseUrl).toBe("http://127.0.0.1:11434/");
 
-    const model = screen.getByPlaceholderText("model name");
+    const model = screen.getByPlaceholderText("Model name");
     fireEvent.change(model, { target: { value: "sqlcoder:15b" } });
     fireEvent.blur(model);
     expect(getPrefs().assistantOllamaModel).toBe("sqlcoder:15b");

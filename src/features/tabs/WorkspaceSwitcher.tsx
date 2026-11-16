@@ -90,7 +90,7 @@ function Switcher({ onClose }: { onClose: () => void }) {
   return (
     <div className="flex min-h-0 flex-col" onKeyDown={onKeyDown}>
       <div className="border-border flex h-10 items-center gap-2.5 border-b px-3.5">
-        <Search className="text-muted-foreground size-4 shrink-0" />
+        <Search aria-hidden className="text-muted-foreground size-4 shrink-0" />
         <input
           autoFocus
           value={query}
@@ -104,7 +104,7 @@ function Switcher({ onClose }: { onClose: () => void }) {
           aria-activedescendant={`workspace-option-${index}`}
           spellCheck={false}
           autoComplete="off"
-          className="placeholder:text-muted-foreground/80 h-full min-w-0 flex-1 bg-transparent text-sm outline-none"
+          className="placeholder:text-muted-foreground h-full min-w-0 flex-1 bg-transparent text-sm outline-none"
         />
       </div>
       <div
@@ -115,8 +115,8 @@ function Switcher({ onClose }: { onClose: () => void }) {
         className="max-h-80 overflow-y-auto p-1.5"
       >
         {entries.length === 0 && (
-          <div className="text-muted-foreground px-2 py-3 text-center text-xs">
-            {order.length === 0 ? "No open workspaces." : "No workspace matches."}
+          <div className="text-muted-foreground px-3 py-2 text-xs">
+            {order.length === 0 ? "No open workspaces" : "No matches"}
           </div>
         )}
         {entries.map((e, i) => {
@@ -132,12 +132,12 @@ function Switcher({ onClose }: { onClose: () => void }) {
               onMouseMove={() => setSelected(i)}
               onClick={() => choose(i)}
               className={cn(
-                "flex h-8 cursor-default items-center gap-2.5 rounded-md px-2 text-sm select-none",
+                "flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-sm select-none",
                 i === index && "bg-brand-soft",
               )}
             >
               <ColorDot color={e.color} size={9} />
-              <span className="text-muted-foreground w-5 shrink-0 text-[10px] font-bold">
+              <span className="text-muted-foreground w-5 shrink-0 text-[10px] font-medium">
                 {DRIVER_SHORT[e.driver]}
               </span>
               <span className="min-w-0 truncate font-medium">{e.name}</span>
@@ -147,10 +147,10 @@ function Switcher({ onClose }: { onClose: () => void }) {
                 </span>
               )}
               <span className="ml-auto flex shrink-0 items-center gap-2 pl-3">
-                <span className="text-muted-foreground text-[11px] tabular-nums">
+                <span className="text-muted-foreground text-xs tabular-nums">
                   {e.tabCount === 1 ? "1 tab" : `${e.tabCount} tabs`}
                 </span>
-                {current && <Check className="text-brand size-3.5" aria-label="Current" />}
+                {current && <Check className="text-brand size-3.5 shrink-0" aria-label="Current" />}
                 {i < 9 && <Kbd combo={`Mod+${i + 1}`} className="bg-transparent" />}
               </span>
             </div>
@@ -164,11 +164,11 @@ function Switcher({ onClose }: { onClose: () => void }) {
           onMouseMove={() => setSelected(entries.length)}
           onClick={() => choose(entries.length)}
           className={cn(
-            "text-muted-foreground flex h-8 cursor-default items-center gap-2.5 rounded-md px-2 text-sm select-none",
+            "text-muted-foreground flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-sm select-none",
             index === entries.length && "bg-brand-soft text-foreground",
           )}
         >
-          <Plus className="size-3.5" aria-hidden />
+          <Plus className="size-3.5 shrink-0" aria-hidden />
           Open Connection…
         </div>
       </div>
@@ -190,7 +190,7 @@ export function WorkspaceSwitcherHost() {
       <DialogContent
         showCloseButton={false}
         data-scope="dialog"
-        className="bg-popover ring-foreground/10 top-[14vh] max-w-[calc(100%-2rem)] translate-y-0 gap-0 overflow-hidden rounded-xl p-0 shadow-2xl sm:max-w-[480px] dark:ring-white/10"
+        className="bg-popover ring-foreground/10 top-[14vh] max-w-[calc(100%-2rem)] translate-y-0 gap-0 overflow-hidden rounded-xl p-0 shadow-2xl sm:max-w-[480px]"
       >
         <DialogTitle className="sr-only">Show Workspaces</DialogTitle>
         <DialogDescription className="sr-only">

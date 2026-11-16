@@ -59,6 +59,7 @@ import {
 } from "@/features/staging/model";
 import type { CellEdit, StagingState } from "@/features/staging/types";
 import {
+  BAR_HOVER,
   BarIconButton,
   BarSeparator,
   BarTooltip,
@@ -266,7 +267,7 @@ export function ResultGrid({
       if (value.t === "default") {
         if (!column.hasDefault) return;
         if (driver === "sqlite" && !key.startsWith("new:")) {
-          toast.message("SQLite can't set an existing value to DEFAULT", {
+          toast.message("SQLite cannot set an existing value to DEFAULT", {
             description: "DEFAULT works on new rows only.",
           });
           return;
@@ -325,7 +326,7 @@ export function ResultGrid({
           edits.push({ rowKey: row.key, col: c, value, original: originalOf(row.key) });
         }
         if (sqliteDefaults > 0)
-          toast.message("SQLite can't set an existing value to DEFAULT", {
+          toast.message("SQLite cannot set an existing value to DEFAULT", {
             description: "DEFAULT works on new rows only.",
           });
         if (notText > 0 && edits.length === 0) toast.message("EMPTY applies to text columns only");
@@ -534,6 +535,10 @@ export function ResultGrid({
   );
 }
 
+/** A pressed bar toggle is a selection: it keeps its brand tint under the pointer too. */
+const PRESSED =
+  "bg-brand-soft text-brand hover:bg-brand-soft hover:text-brand dark:hover:bg-brand-soft";
+
 /** TablePlus's results footer: row count, time, Show Message, Pin, row numbers, Export…. */
 export function ResultFooter({
   info,
@@ -577,10 +582,13 @@ export function ResultFooter({
           variant="ghost"
           size="xs"
           aria-label="Show Message"
-          className="text-muted-foreground hover:text-foreground gap-1 px-2 text-[12px] transition-colors"
+          className={cn(
+            "text-muted-foreground hover:text-foreground gap-1 px-2 text-[12px]",
+            BAR_HOVER,
+          )}
           onClick={onShowMessage}
         >
-          <MessageSquareText className="size-3.5" />
+          <MessageSquareText />
           <span className="@max-[420px]:hidden">Show Message</span>
         </Button>
       )}
@@ -588,24 +596,24 @@ export function ResultFooter({
         label={pinned ? "Unpin Result" : "Pin Result"}
         tooltip={pinned ? "Unpin Result" : "Pin Result: keep it when the query runs again"}
         aria-pressed={pinned}
-        className={cn(pinned && "text-brand hover:text-brand")}
+        className={cn(pinned && PRESSED)}
         onClick={onTogglePin}
       >
-        {pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
+        {pinned ? <PinOff /> : <Pin />}
       </BarIconButton>
       <BarIconButton
         label={rowNumbers ? "Hide Row Numbers" : "Show Row Numbers"}
         aria-pressed={rowNumbers}
-        className={cn(rowNumbers && "text-foreground")}
+        className={cn(rowNumbers && PRESSED)}
         onClick={() => setPref("resultRowNumbers", !rowNumbers)}
       >
-        <Hash className="size-3.5" />
+        <Hash />
       </BarIconButton>
       <BarSeparator />
       <Button
         variant="ghost"
         size="xs"
-        className="text-muted-foreground hover:text-foreground px-2 text-[12px] transition-colors"
+        className={cn("text-muted-foreground hover:text-foreground px-2 text-[12px]", BAR_HOVER)}
         onClick={onExport}
       >
         Export…

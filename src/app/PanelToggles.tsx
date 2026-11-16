@@ -15,7 +15,7 @@ export function PanelToggles({ leftSidebar = true }: { leftSidebar?: boolean }) 
       role="group"
       aria-label="Panels"
       data-slot="panel-toggles"
-      className="border-border bg-surface flex h-8 shrink-0 items-center gap-0.5 rounded-md border p-0.5"
+      className="border-border bg-surface flex h-7 shrink-0 items-center gap-0.5 rounded-md border p-px"
     >
       {leftSidebar && (
         <ToolbarButton

@@ -75,7 +75,7 @@ function ParamSyntaxRow() {
           id="pref-editorQueryParamsRegex"
           size="sm"
           aria-describedby="pref-editorQueryParamsRegex-description"
-          className="h-7 w-44 rounded-md font-mono text-xs"
+          className="w-44 font-mono text-xs"
         >
           <SelectValue />
         </SelectTrigger>
@@ -117,7 +117,7 @@ function SelectRow<K extends keyof Prefs>({
           id={id}
           size="sm"
           aria-describedby={description ? `${id}-description` : undefined}
-          className={`h-7 ${width} rounded-md text-xs`}
+          className={`${width} text-xs`}
         >
           <SelectValue />
         </SelectTrigger>

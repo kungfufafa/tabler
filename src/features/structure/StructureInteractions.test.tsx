@@ -123,10 +123,10 @@ describe("double-click a blank row (columns, indexes, triggers)", () => {
     fireEvent.doubleClick(scroller);
     expect(ops().map((o) => o.op)).toEqual(["addColumn", "addColumn"]);
 
-    // "No column matches" is blank space too: the search is cleared for the new column.
+    // "No matches" is blank space too: the search is cleared for the new column.
     const search = screen.getByRole("textbox", { name: "Search columns" });
     fireEvent.change(search, { target: { value: "zzz" } });
-    const none = screen.getByText(/No column matches/);
+    const none = screen.getByText("No matches");
     fireEvent.doubleClick(none);
     expect(ops()).toHaveLength(3);
     expect(search).toHaveValue("");
@@ -150,13 +150,13 @@ describe("double-click a blank row (columns, indexes, triggers)", () => {
     const row = blankRow("triggers")!;
     expect(row).toHaveTextContent("double-click to add a trigger");
     fireEvent.doubleClick(row);
-    const dialog = await screen.findByRole("dialog", { name: "New trigger" });
-    fireEvent.click(within(dialog).getByRole("button", { name: /Add trigger/ }));
+    const dialog = await screen.findByRole("dialog", { name: "New Trigger" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Add Trigger/ }));
     await waitFor(() => expect(ops().map((o) => o.op)).toEqual(["createTrigger"]));
     // The empty area below the grid adds one as well.
     const scroller = screen.getByRole("region", { name: "Triggers" }).closest(".overflow-auto")!;
     fireEvent.doubleClick(scroller);
-    expect(await screen.findByRole("dialog", { name: "New trigger" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "New Trigger" })).toBeInTheDocument();
   });
 
   it("ignores a double-click on a real row, in a field, on a button or in a section bar", async () => {
@@ -253,21 +253,21 @@ describe("Delete on selected columns", () => {
     expect(ops()).toEqual([]);
   });
 
-  it("the context menu of a selected column says 'Delete 3 columns'; on another row it drops that row", async () => {
+  it("the context menu of a selected column says 'Delete 3 Columns'; on another row it drops that row", async () => {
     const { ops } = await setup();
     press(handle("bio"));
     press(handle("role"), { metaKey: true });
     press(handle("nickname"), { metaKey: true });
 
     fireEvent.contextMenu(handle("role").closest("tr")!);
-    const item = await screen.findByRole("menuitem", { name: "Delete 3 columns" });
+    const item = await screen.findByRole("menuitem", { name: "Delete 3 Columns" });
     fireEvent.click(item);
     expect(ops()).toHaveLength(3);
     expect(droppedNames(ops())).toEqual(["bio", "nickname", "role"]);
 
     // Restore says so for the dropped selection, and restores all of them.
     fireEvent.contextMenu(handle("bio").closest("tr")!);
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Restore 3 columns" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Restore 3 Columns" }));
     expect(ops()).toEqual([]);
 
     // A row outside the selection: one column, as before.
@@ -447,7 +447,7 @@ describe("prefix lengths of MySQL index columns", () => {
     // (close the picker first: its draft is staged when it closes)
     fireEvent.keyDown(columns, { key: "Escape" });
     await act(() => actions.run("grid.preview"));
-    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
     expect(await within(sheet).findByText(/MySQL needs a prefix length/)).toBeInTheDocument();
     fireEvent.click(within(sheet).getByRole("button", { name: /^Commit/ }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
@@ -466,7 +466,7 @@ describe("prefix lengths of MySQL index columns", () => {
       expect(ops()[0]).toMatchObject({ op: "addIndex", index: { columns: ["email(10)"] } }),
     );
     await act(() => actions.run("grid.preview"));
-    const preview = await screen.findByRole("dialog", { name: "Preview changes" });
+    const preview = await screen.findByRole("dialog", { name: "Preview Changes" });
     const section = await within(preview).findByRole("region", { name: /^Structure / });
     await waitFor(() => expect(section).toHaveTextContent("`email`(10)"));
     fireEvent.click(within(preview).getByRole("button", { name: /^Commit/ }));
@@ -556,7 +556,7 @@ describe("the last apply failed with nothing applied", () => {
     expect(ops().map((o) => o.op)).toEqual(["alterColumnType", "alterColumnNullable"]);
 
     await act(() => actions.run("grid.preview"));
-    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
     const section = await within(sheet).findByRole("region", { name: /^Structure / });
     await waitFor(() => expect(section).toHaveTextContent(/ALTER TABLE/));
     // both edits are clauses of ONE statement
@@ -587,7 +587,7 @@ describe("the last apply failed with nothing applied", () => {
     type(cell("c:nickname:name"), "nick");
     type(cell("c:bio:dataType"), "nosuchtype");
     await act(() => actions.run("grid.preview"));
-    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
     await within(sheet).findByRole("region", { name: /^Structure / });
     await waitFor(() => expect(sheet.textContent).toMatch(/RENAME COLUMN/));
     fireEvent.click(within(sheet).getByRole("button", { name: /^Commit/ }));
@@ -603,7 +603,7 @@ describe("the last apply failed with nothing applied", () => {
     const { ops } = await setup();
     type(cell("c:bio:dataType"), "nosuchtype");
     await act(() => actions.run("grid.preview"));
-    const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+    const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
     await within(sheet).findByRole("region", { name: /^Structure / });
     await waitFor(() => expect(sheet.textContent).toMatch(/ALTER TABLE/));
     fireEvent.click(within(sheet).getByRole("button", { name: /^Commit/ }));

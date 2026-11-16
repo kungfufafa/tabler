@@ -69,7 +69,7 @@ export function StartupConnectionRow() {
             id="pref-startup-connection"
             size="sm"
             aria-describedby="pref-startup-connection-description"
-            className="h-7 w-56 rounded-md text-xs"
+            className="w-56 text-xs"
           >
             <SelectValue />
           </SelectTrigger>
@@ -95,7 +95,7 @@ export function StartupConnectionRow() {
           </SelectContent>
         </Select>
         {action === "connection" && profileId !== "" && (
-          <label className="text-muted-foreground flex items-center gap-1.5 text-xs">
+          <label className="flex h-7 items-center gap-2 text-xs">
             <Checkbox
               checked={promptForm}
               onCheckedChange={(v) => setPref("startupPromptForm", v === true)}

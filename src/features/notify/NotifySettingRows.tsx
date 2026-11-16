@@ -3,14 +3,14 @@ import { SettingGroup, SettingRow } from "@/features/settings/controls";
 import { setPref, usePrefs } from "@/stores/prefs";
 
 /**
- * Settings ▸ General ▸ Import & Export: TablePlus's "Show open containing folder popup after
+ * Settings ▸ General ▸ Import and export: TablePlus's "Show open containing folder popup after
  * exporting data" (Table Data) and the native notifications of long jobs.
  */
 export function NotifySettingRows() {
   const popup = usePrefs((p) => p.exportRevealPopup);
   const notifications = usePrefs((p) => p.showNotifications);
   return (
-    <SettingGroup title="Import & Export">
+    <SettingGroup title="Import and export">
       <SettingRow
         id="pref-export-reveal-popup"
         label="Show open containing folder popup after exporting data"

@@ -1,14 +1,8 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type FormEvent,
-  type KeyboardEvent,
-  type ReactNode,
-} from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { toast } from "sonner";
-import { Kbd } from "@/components/Kbd";
+import { FormError } from "@/components/FormError";
+import { FormField } from "@/components/FormField";
+import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -50,30 +44,6 @@ const sameDraft = (a: SavedQueryDraft, b: SavedQueryDraft) =>
   a.sql === b.sql &&
   a.folderId === b.folderId &&
   a.profileId === b.profileId;
-
-function Field({
-  id,
-  label,
-  hint,
-  children,
-}: {
-  id: string;
-  label: string;
-  hint?: string | null;
-  children: ReactNode;
-}) {
-  return (
-    <div className="grid grid-cols-[5.5rem_1fr] items-start gap-x-3 gap-y-1">
-      <label htmlFor={id} className="text-muted-foreground pt-1.5 text-right text-xs">
-        {label}
-      </label>
-      <div className="flex min-w-0 flex-col gap-1">
-        {children}
-        {hint && <p className="text-muted-foreground text-[11px] leading-4">{hint}</p>}
-      </div>
-    </div>
-  );
-}
 
 function SavedQueryForm({ request }: { request: SavedQueryDialogRequest }) {
   const [draft, setDraft] = useState<SavedQueryDraft>(request.draft);
@@ -167,16 +137,16 @@ function SavedQueryForm({ request }: { request: SavedQueryDialogRequest }) {
   };
 
   return (
-    <DialogContent className="gap-3 sm:max-w-xl" onKeyDown={onKeyDown}>
-      <DialogHeader className="gap-1">
+    <DialogContent className="sm:max-w-[34rem]" onKeyDown={onKeyDown}>
+      <DialogHeader>
         <DialogTitle className="text-sm">{isNew ? "Add to Queries" : "Edit Query"}</DialogTitle>
         <DialogDescription className="text-xs">
           Saved queries are listed in the sidebar's Queries pane. Type the keyword in the SQL editor
           to insert the query.
         </DialogDescription>
       </DialogHeader>
-      <form className="flex flex-col gap-2.5" onSubmit={(e) => void save(e)}>
-        <Field id="saved-query-name" label="Name">
+      <form className="flex flex-col gap-3" onSubmit={(e) => void save(e)}>
+        <FormField orientation="inline" htmlFor="saved-query-name" label="Name">
           <Input
             id="saved-query-name"
             autoFocus
@@ -185,47 +155,51 @@ function SavedQueryForm({ request }: { request: SavedQueryDialogRequest }) {
             onChange={(e) => set({ name: e.target.value })}
             placeholder="Untitled Query"
             autoComplete="off"
-            className="h-7 text-xs"
+            className="h-7 rounded-md text-xs md:text-xs"
           />
-        </Field>
-        <Field
-          id="saved-query-keyword"
+        </FormField>
+        <FormField
+          orientation="inline"
+          htmlFor="saved-query-keyword"
           label="Keyword"
+          error={keywordError}
           hint={
-            keywordError ??
-            (sharedWith
+            sharedWith
               ? `“${sharedWith.name}” has this keyword too: both are offered.`
-              : "Optional. Typing it in the SQL editor offers this query.")
+              : "Typing it in the SQL editor offers this query."
           }
         >
           <Input
             id="saved-query-keyword"
             value={draft.keyword}
             onChange={(e) => set({ keyword: e.target.value })}
-            placeholder="e.g. recent"
+            placeholder="Optional, e.g. recent"
             aria-invalid={keywordError !== null}
+            aria-describedby={
+              keywordError !== null ? "saved-query-keyword-error" : "saved-query-keyword-hint"
+            }
             spellCheck={false}
             autoComplete="off"
-            className="h-7 font-mono text-xs"
+            className="h-7 rounded-md font-mono text-xs md:text-xs"
           />
-        </Field>
-        <Field id="saved-query-sql" label="SQL">
+        </FormField>
+        <FormField orientation="inline" htmlFor="saved-query-sql" label="SQL">
           <Textarea
             id="saved-query-sql"
             value={draft.sql}
             onChange={(e) => set({ sql: e.target.value })}
             spellCheck={false}
             rows={10}
-            className="max-h-[40dvh] min-h-40 resize-y font-mono text-xs leading-5 md:text-xs"
+            className="max-h-[40dvh] min-h-40 resize-y rounded-md font-mono text-xs leading-5 md:text-xs"
           />
-        </Field>
-        <div className="grid grid-cols-2 gap-x-3">
-          <Field id="saved-query-folder" label="Folder">
+        </FormField>
+        <div className="grid grid-cols-2 gap-3">
+          <FormField orientation="inline" htmlFor="saved-query-folder" label="Folder">
             <Select
               value={draft.folderId ?? TOP}
               onValueChange={(v) => set({ folderId: v === TOP ? null : v })}
             >
-              <SelectTrigger id="saved-query-folder" size="sm" className="h-7 w-full text-xs">
+              <SelectTrigger id="saved-query-folder" size="sm" className="w-full text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent data-scope="dialog">
@@ -239,14 +213,14 @@ function SavedQueryForm({ request }: { request: SavedQueryDialogRequest }) {
                 ))}
               </SelectContent>
             </Select>
-          </Field>
-          <Field id="saved-query-scope" label="Connection">
+          </FormField>
+          <FormField orientation="inline" htmlFor="saved-query-scope" label="Connection">
             <Select
               value={draft.profileId ?? ALL}
               onValueChange={(v) => set({ profileId: v === ALL ? null : v })}
               disabled={scopeProfile === null}
             >
-              <SelectTrigger id="saved-query-scope" size="sm" className="h-7 w-full text-xs">
+              <SelectTrigger id="saved-query-scope" size="sm" className="w-full text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent data-scope="dialog">
@@ -260,19 +234,15 @@ function SavedQueryForm({ request }: { request: SavedQueryDialogRequest }) {
                 )}
               </SelectContent>
             </Select>
-          </Field>
+          </FormField>
         </div>
-        {error && (
-          <p role="alert" className="text-error text-xs">
-            {error}
-          </p>
-        )}
+        {error && <FormError>{error}</FormError>}
         {/* ↩ in a single-line field saves. */}
         <button type="submit" hidden aria-hidden tabIndex={-1} />
       </form>
-      <DialogFooter className="items-center py-3">
+      <DialogFooter className="items-center">
         {autoSave && (
-          <span className="text-muted-foreground mr-auto text-[11px]" role="status">
+          <span className="text-muted-foreground mr-auto text-xs" role="status">
             {autoStatus === "saving"
               ? "Saving…"
               : autoStatus === "saved"
@@ -285,7 +255,7 @@ function SavedQueryForm({ request }: { request: SavedQueryDialogRequest }) {
         </Button>
         <Button size="sm" onClick={() => void save()} disabled={!canSave}>
           Save
-          <Kbd combo="Mod+S" className="border-primary-foreground/30 bg-transparent text-inherit" />
+          <KbdHint combo="Mod+S" />
         </Button>
       </DialogFooter>
     </DialogContent>

@@ -1,6 +1,6 @@
 import { FileCode2, LayoutGrid, Table2, TableProperties } from "lucide-react";
 import { useState } from "react";
-import { Kbd } from "@/components/Kbd";
+import { KbdHint } from "@/components/KbdHint";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -115,7 +115,7 @@ export function UnsavedChangesDialog() {
   return (
     <AlertDialog open={live !== null} onOpenChange={(open) => !open && cancel()}>
       <AlertDialogContent
-        className="gap-3 data-[size=default]:sm:max-w-md"
+        className="data-[size=default]:sm:max-w-md"
         onKeyDown={(e) => {
           if (comboFromEvent(e) === DISCARD_COMBO) {
             e.preventDefault();
@@ -124,7 +124,7 @@ export function UnsavedChangesDialog() {
         }}
       >
         <AlertDialogHeader>
-          <AlertDialogTitle className="text-sm font-semibold">
+          <AlertDialogTitle className="text-sm">
             Discard {plural(n, "pending change")}?
           </AlertDialogTitle>
           <AlertDialogDescription className="text-xs">
@@ -136,8 +136,8 @@ export function UnsavedChangesDialog() {
             {request.dirty.map((d) => {
               const Icon = KIND_ICONS[d.kind];
               return (
-                <li key={d.id} className="flex h-6 items-center gap-1.5 px-2">
-                  <Icon className="text-muted-foreground size-3.5 shrink-0" />
+                <li key={d.id} className="flex h-7 items-center gap-2 px-2">
+                  <Icon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
                   <span className="min-w-0 truncate">{d.title}</span>
                   <span className="text-muted-foreground ml-auto shrink-0 tabular-nums">
                     {d.kind === "query" ? "unsaved" : plural(d.count, "change")}
@@ -147,9 +147,9 @@ export function UnsavedChangesDialog() {
             })}
           </ul>
         )}
-        <AlertDialogFooter className="items-center px-4 py-3 sm:justify-between">
+        <AlertDialogFooter className="items-center sm:justify-between">
           {reviewTarget || reviewConnection !== null ? (
-            <Button variant="ghost" size="sm" onClick={review} className="sm:mr-auto">
+            <Button variant="outline" size="sm" onClick={review} className="sm:mr-auto">
               Review…
             </Button>
           ) : (
@@ -159,10 +159,7 @@ export function UnsavedChangesDialog() {
             <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
             <AlertDialogAction variant="destructive" size="sm" onClick={discard}>
               Discard
-              <Kbd
-                combo={DISCARD_COMBO}
-                className="border-current/25 bg-transparent text-inherit"
-              />
+              <KbdHint combo={DISCARD_COMBO} />
             </AlertDialogAction>
           </div>
         </AlertDialogFooter>

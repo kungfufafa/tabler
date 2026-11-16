@@ -63,7 +63,7 @@ afterEach(() => {
 });
 
 describe("SSH host-key prompt", () => {
-  it("unknown key → Trust & Connect → the connect is retried and succeeds", async () => {
+  it("unknown key → Trust and Connect → the connect is retried and succeeds", async () => {
     const user = userEvent.setup();
     const connect = vi.spyOn(ipc.connections, "connect");
     const accept = vi.spyOn(ipc.connections, "acceptHostKey");
@@ -79,7 +79,7 @@ describe("SSH host-key prompt", () => {
     expect(BASTION_FP).toMatch(/^SHA256:2h0Y/);
 
     await user.click(within(dialog).getByRole("checkbox"));
-    await user.click(within(dialog).getByRole("button", { name: "Trust & Connect" }));
+    await user.click(within(dialog).getByRole("button", { name: "Trust and Connect" }));
 
     await waitFor(() => expect(useConnectionsStore.getState().order).toHaveLength(1));
     expect(accept).toHaveBeenCalledWith("p-staging-ssh", BASTION_FP, true);
@@ -189,7 +189,7 @@ describe("SSH host-key prompt", () => {
     await act(() => Promise.resolve());
     expect(useHostKeyPromptStore.getState().queue).toHaveLength(1);
     const dialog = await screen.findByRole("alertdialog");
-    await user.click(within(dialog).getByRole("button", { name: "Trust & Connect" }));
+    await user.click(within(dialog).getByRole("button", { name: "Trust and Connect" }));
     await expect(asking).resolves.toEqual({ persist: false });
   });
 
@@ -225,7 +225,7 @@ describe("ConnectionDialog", () => {
 
     await user.click(within(form).getByRole("button", { name: "Test" }));
     const prompt = await screen.findByRole("alertdialog");
-    await user.click(within(prompt).getByRole("button", { name: "Trust & Test" }));
+    await user.click(within(prompt).getByRole("button", { name: "Trust and Test" }));
 
     expect(await within(form).findByText(/· via SSH$/)).toBeInTheDocument();
     expect(accept).toHaveBeenCalledWith(STAGING.id, BASTION_FP, false);

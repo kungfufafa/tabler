@@ -4,14 +4,14 @@ import { groupShortcuts, REFERENCE_SHORTCUTS } from "./shortcuts";
 
 const defs: ShortcutDef[] = [
   { id: "query.run", keys: "Mod+Enter", scope: "editor", label: "Run query" },
-  { id: "tab.next", keys: "Ctrl+Tab", scope: "global", label: "Next tab" },
-  { id: "grid.commit", keys: "Mod+S", scope: "grid", label: "Commit changes" },
-  { id: "tab.next", keys: "Mod+Shift+]", scope: "global", label: "Next tab" },
+  { id: "tab.next", keys: "Ctrl+Tab", scope: "global", label: "Next Tab" },
+  { id: "grid.commit", keys: "Mod+S", scope: "grid", label: "Commit Changes" },
+  { id: "tab.next", keys: "Mod+Shift+]", scope: "global", label: "Next Tab" },
   { id: "palette.open", keys: "Mod+K", scope: "global", label: "Command palette" },
   { id: "palette.open", keys: "Mod+P", scope: "global", label: "Quick open" },
   // Exact duplicate binding (same id + keys): dropped even with another label.
   { id: "palette.open", keys: "Mod+K", scope: "global", label: "Palette (again)" },
-  { id: "tab.next", keys: "Ctrl+Tab", scope: "global", label: "Next tab" },
+  { id: "tab.next", keys: "Ctrl+Tab", scope: "global", label: "Next Tab" },
   { id: "query.save", keys: "Mod+S", scope: "editor", label: "Save query" },
 ];
 
@@ -20,7 +20,7 @@ describe("groupShortcuts", () => {
     const groups = groupShortcuts(defs, "", true, []);
     expect(groups.map((g) => g.title)).toEqual(["Global", "Table grid", "SQL editor"]);
     expect(groups[0]?.rows).toEqual([
-      { id: "tab.next", label: "Next tab", keys: ["Ctrl+Tab", "Mod+Shift+]"] },
+      { id: "tab.next", label: "Next Tab", keys: ["Ctrl+Tab", "Mod+Shift+]"] },
       { id: "palette.open", label: "Command palette", keys: ["Mod+K"] },
       { id: "palette.open", label: "Quick open", keys: ["Mod+P"] },
     ]);
@@ -30,13 +30,13 @@ describe("groupShortcuts", () => {
   it("filters by label, id, scope and key spelling; every term must match", () => {
     const labels = (q: string) =>
       groupShortcuts(defs, q, true, []).flatMap((g) => g.rows.map((r) => r.label));
-    expect(labels("commit")).toEqual(["Commit changes"]);
+    expect(labels("commit")).toEqual(["Commit Changes"]);
     expect(labels("QUICK")).toEqual(["Quick open"]);
     expect(labels("query.save")).toEqual(["Save query"]);
-    expect(labels("⌘s")).toEqual(["Commit changes", "Save query"]);
+    expect(labels("⌘s")).toEqual(["Commit Changes", "Save query"]);
     expect(labels("cmd+s editor")).toEqual(["Save query"]);
-    expect(labels("mod+shift+]")).toEqual(["Next tab"]);
-    expect(labels("table grid")).toEqual(["Commit changes"]);
+    expect(labels("mod+shift+]")).toEqual(["Next Tab"]);
+    expect(labels("table grid")).toEqual(["Commit Changes"]);
     expect(labels("  ")).toHaveLength(6);
     expect(labels("nothing-like-this")).toEqual([]);
     expect(groupShortcuts(defs, "nothing-like-this", true, [])).toEqual([]);
@@ -71,18 +71,18 @@ describe("groupShortcuts", () => {
     const groups = groupShortcuts(KEYMAP, "", true, []);
     const row = (title: string, label: string) =>
       groups.find((g) => g.title === title)?.rows.find((r) => r.label === label);
-    expect(row("SQL editor", "Run current statement")).toEqual({
+    expect(row("SQL editor", "Run Current Statement")).toEqual({
       id: "query.run-current",
-      label: "Run current statement",
+      label: "Run Current Statement",
       keys: ["Mod+Enter"],
     });
-    expect(row("SQL editor", "Run all")?.keys).toEqual(["Mod+Shift+Enter"]);
+    expect(row("SQL editor", "Run All")?.keys).toEqual(["Mod+Shift+Enter"]);
     expect(row("SQL editor", "Beautify SQL")?.keys).toEqual(["Mod+I", "Alt+Shift+F"]);
     expect(row("SQL editor", "Uglify SQL")?.keys).toEqual(["Mod+Shift+I"]);
-    // ⌘E is "Open SQL editor" in the SQL editor too (TablePlus has no key for Explain).
+    // ⌘E is "Open SQL Editor" in the SQL editor too (TablePlus has no key for Explain).
     expect(row("SQL editor", "Explain")?.keys).toEqual(["Mod+Alt+E"]);
     // ⌃` off macOS, where the tests run, is Ctrl+` (`nonMacKeys`).
-    expect(row("Global", "Toggle result pane")?.keys).toEqual(["Mod+`"]);
+    expect(row("Global", "Toggle Result Pane")?.keys).toEqual(["Mod+`"]);
   });
 });
 
@@ -108,63 +108,63 @@ describe("reference shortcuts", () => {
     expect(grid.slice(0, firstRef).some(isRef)).toBe(false);
     expect(grid.slice(firstRef).every(isRef)).toBe(true);
     // The grid selects rows (TablePlus): typing never edits, ⌫ / ⌦ delete the selected rows.
-    expect(grid.find((r) => r.label.startsWith("Edit cell"))).toEqual({
+    expect(grid.find((r) => r.label.startsWith("Edit Cell"))).toEqual({
       id: "ref:Enter",
-      label: "Edit cell (typing does not edit)",
+      label: "Edit Cell (typing does not edit)",
       keys: ["Enter", "F2"],
     });
-    expect(grid.find((r) => r.label === "Select the row above / below")?.keys).toEqual([
+    expect(grid.find((r) => r.label === "Select the Row Above / Below")?.keys).toEqual([
       "Up",
       "Down",
     ]);
-    expect(grid.find((r) => r.label === "Extend the row selection")?.keys).toEqual([
+    expect(grid.find((r) => r.label === "Extend the Row Selection")?.keys).toEqual([
       "Shift+Up",
       "Shift+Down",
       "Shift+Click",
     ]);
-    expect(grid.find((r) => r.label === "Previous / next cell in the row")?.keys).toEqual([
+    expect(grid.find((r) => r.label === "Previous / Next Cell in the Row")?.keys).toEqual([
       "Left",
       "Right",
       "Tab",
       "Shift+Tab",
     ]);
-    expect(grid.find((r) => r.id.startsWith("ref:") && r.label === "Delete selected rows")).toEqual(
-      { id: "ref:Backspace", label: "Delete selected rows", keys: ["Backspace", "Delete"] },
+    expect(grid.find((r) => r.id.startsWith("ref:") && r.label === "Delete Selected Rows")).toEqual(
+      { id: "ref:Backspace", label: "Delete Selected Rows", keys: ["Backspace", "Delete"] },
     );
-    expect(grid.find((r) => r.id === "grid.copy")?.label).toBe("Copy selected rows");
+    expect(grid.find((r) => r.id === "grid.copy")?.label).toBe("Copy Selected Rows");
     expect(grid.map((r) => r.label)).toEqual(
       expect.arrayContaining([
-        "Add / remove a row",
-        "First / last column",
-        "First / last row",
-        "Page up / down",
-        "Select only the focused row",
-        "Select all rows",
-        "Select a column (on its header)",
+        "Add / Remove a Row",
+        "First / Last Column",
+        "First / Last Row",
+        "Page Up / Down",
+        "Select Only the Focused Row",
+        "Select All Rows",
+        "Select a Column (on its header)",
       ]),
     );
     expect(grid.map((r) => r.label)).not.toContain("Clear and edit cell");
     expect(rowsOf("Cell editor").map((r) => r.label)).toEqual([
-      "Save and move down",
-      "Save and move to the next / previous cell",
-      "Cancel the edit",
-      "New line (opens the multi-line editor)",
+      "Save and Move Down",
+      "Save and Move to the Next / Previous Cell",
+      "Cancel the Edit",
+      "New Line (opens the multi-line editor)",
       "Save (JSON / multi-line editor)",
-      "Stage the edit and commit changes",
+      "Stage the Edit and Commit Changes",
     ]);
     const editor = rowsOf("SQL editor");
-    expect(editor.find((r) => r.label === "Find next")?.keys).toEqual(["F3", "Mod+G"]);
-    expect(editor.find((r) => r.label === "Go to line")?.keys).toEqual(["Mod+Alt+G"]);
-    expect(editor.find((r) => r.label === "Show completions")?.keys).toEqual(["Ctrl+Space"]);
+    expect(editor.find((r) => r.label === "Find Next")?.keys).toEqual(["F3", "Mod+G"]);
+    expect(editor.find((r) => r.label === "Go to Line")?.keys).toEqual(["Mod+Alt+G"]);
+    expect(editor.find((r) => r.label === "Show Completions")?.keys).toEqual(["Ctrl+Space"]);
   });
 
   it("is searchable like the keymap (but not by its synthetic ids)", () => {
     const labels = (q: string) =>
       groupShortcuts(KEYMAP, q, true).flatMap((g) => g.rows.map((r) => r.label));
-    expect(labels("comment")).toEqual(["Toggle line comment", "Toggle block comment"]);
-    expect(labels("⌘/")).toEqual(["Toggle line comment"]);
-    expect(labels("cell editor escape")).toEqual(["Cancel the edit"]);
-    expect(labels("f2")).toEqual(["Edit cell (typing does not edit)"]);
+    expect(labels("comment")).toEqual(["Toggle Line Comment", "Toggle Block Comment"]);
+    expect(labels("⌘/")).toEqual(["Toggle Line Comment"]);
+    expect(labels("cell editor escape")).toEqual(["Cancel the Edit"]);
+    expect(labels("f2")).toEqual(["Edit Cell (typing does not edit)"]);
     expect(labels("ref:")).toEqual([]);
   });
 
@@ -192,12 +192,12 @@ describe("reference shortcuts", () => {
   it("drops a built-in key that a global shortcut takes in its scope", () => {
     const labels = (defs: ShortcutDef[]) =>
       groupShortcuts(defs, "", true, [
-        { scope: "editor", keys: "Mod+D", label: "Select next occurrence" },
+        { scope: "editor", keys: "Mod+D", label: "Select Next Occurrence" },
       ]).flatMap((g) => g.rows.map((r) => r.label));
     // Global keys reach the editor only when allowed there.
     expect(labels([{ id: "tab.next", keys: "Mod+D", scope: "global", label: "Next" }])).toEqual([
       "Next",
-      "Select next occurrence",
+      "Select Next Occurrence",
     ]);
     expect(
       labels([
@@ -215,7 +215,7 @@ describe("reference shortcuts", () => {
     expect(REFERENCE_SHORTCUTS).toContainEqual({
       scope: "editor",
       keys: "Mod+D",
-      label: "Select next occurrence",
+      label: "Select Next Occurrence",
     });
   });
 });

@@ -74,7 +74,7 @@ export function GroupCombobox({
             spellCheck={false}
             placeholder={placeholder}
             value={value}
-            className="pr-8"
+            className="pr-8 text-sm"
             onChange={(e) => {
               onChange(e.target.value);
               setQuery(e.target.value);
@@ -127,7 +127,7 @@ export function GroupCombobox({
               else show();
             }}
           >
-            <ChevronsUpDown className="size-3.5" />
+            <ChevronsUpDown aria-hidden className="size-3.5" />
           </button>
         </div>
       </PopoverAnchor>
@@ -162,8 +162,8 @@ export function GroupCombobox({
                 onMouseEnter={() => setActive(i)}
                 onClick={() => pick(path)}
                 className={cn(
-                  "flex min-w-0 cursor-default items-center gap-1.5 rounded-md px-2 py-1 text-xs",
-                  i === active && "bg-accent text-accent-foreground",
+                  "flex h-7 min-w-0 cursor-default items-center gap-1.5 rounded-md px-2 text-xs",
+                  i === active && "bg-brand-soft",
                   path === value && "font-medium",
                 )}
                 // The whole tree is indented; filtered results show their full path instead.
@@ -173,7 +173,7 @@ export function GroupCombobox({
                     : undefined
                 }
               >
-                <Folder className="text-muted-foreground size-3.5 shrink-0" />
+                <Folder aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
                 <span className="min-w-0 truncate">
                   {query !== null && parent ? (
                     <span className="text-muted-foreground">{parent} / </span>

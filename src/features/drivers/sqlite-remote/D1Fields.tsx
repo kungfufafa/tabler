@@ -86,7 +86,7 @@ export function D1Fields({ form, hasStoredPassword }: KindFieldsProps) {
           id={`${uid}-account`}
           {...register("driverParams.accountId")}
           placeholder="0123456789abcdef0123456789abcdef"
-          className="font-mono"
+          className="font-mono text-sm"
           autoComplete="off"
           spellCheck={false}
         />
@@ -103,17 +103,16 @@ export function D1Fields({ form, hasStoredPassword }: KindFieldsProps) {
             {...register("database")}
             list={`${uid}-databases`}
             placeholder="production-db"
-            className="font-mono"
+            className="font-mono text-sm"
             autoComplete="off"
           />
           <Button
             type="button"
             variant="outline"
-            size="sm"
             disabled={listing.state === "loading"}
             onClick={() => void list()}
           >
-            List databases
+            List Databases
           </Button>
         </div>
         <datalist id={`${uid}-databases`} data-testid="d1-databases">
@@ -135,7 +134,7 @@ export function D1Fields({ form, hasStoredPassword }: KindFieldsProps) {
           id={`${uid}-api`}
           {...register("driverParams.apiBase")}
           placeholder="https://api.cloudflare.com/client/v4"
-          className="font-mono"
+          className="font-mono text-sm"
           autoComplete="off"
           spellCheck={false}
         />

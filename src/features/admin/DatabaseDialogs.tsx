@@ -3,7 +3,8 @@ import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-quer
 import { ChevronRight } from "lucide-react";
 import { useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { toast } from "sonner";
-import { Kbd } from "@/components/Kbd";
+import { FormField } from "@/components/FormField";
+import { KbdHint } from "@/components/KbdHint";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -40,7 +41,7 @@ import {
   type CreateDatabaseForm,
 } from "./databaseForm";
 import { adminKeys } from "./keys";
-import { ErrorLine, Field, NativeSelect } from "./parts";
+import { ErrorLine, NativeSelect } from "./parts";
 import { errorInfo, runAdminDdl, type AdminErrorInfo } from "./run";
 
 /** "+" / New Database… of the ⌘K database list: name, encoding, collation (and PG template). */
@@ -135,7 +136,7 @@ export function CreateDatabaseDialog({
             e.preventDefault();
             void create();
           }}
-          className="flex flex-col gap-3"
+          className="flex flex-col gap-4"
         >
           <DialogHeader>
             <DialogTitle className="text-sm">New Database</DialogTitle>
@@ -143,118 +144,128 @@ export function CreateDatabaseDialog({
               Created on the server of this connection.
             </DialogDescription>
           </DialogHeader>
-          <Field
-            label="Name"
-            htmlFor={`${id}-name`}
-            hint={submitted && problem ? <span className="text-error">{problem}</span> : null}
-          >
-            <Input
-              id={`${id}-name`}
-              autoFocus
-              value={form.name}
-              onChange={(e) => update({ name: e.target.value })}
-              placeholder="new_database"
-              className="h-7 font-mono text-xs md:text-xs"
-              spellCheck={false}
-              autoComplete="off"
-            />
-          </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label={driver === "mysql" ? "Character set" : "Encoding"} htmlFor={`${id}-enc`}>
-              <NativeSelect
-                id={`${id}-enc`}
-                value={encoding}
-                disabled={loading}
-                onChange={(e) => setEncoding(e.target.value)}
-              >
-                {loading && <option value="" />}
-                {options.data?.encodings.map((e) => (
-                  <option key={e.name} value={e.name}>
-                    {e.description ? `${e.name} — ${e.description}` : e.name}
-                  </option>
-                ))}
-              </NativeSelect>
-            </Field>
-            <Field label="Collation" htmlFor={`${id}-coll`}>
-              <NativeSelect
-                id={`${id}-coll`}
-                value={form.collation}
-                disabled={loading}
-                onChange={(e) => update({ collation: e.target.value })}
-              >
-                <option value="">
-                  {defaultCollation ? `Default (${defaultCollation})` : "Default"}
-                </option>
-                {collations.map((c) => (
-                  <option key={`${c.name}\u0000${c.encoding ?? ""}`} value={c.name}>
-                    {c.name}
-                  </option>
-                ))}
-              </NativeSelect>
-            </Field>
-          </div>
-          {driver === "postgres" && (
-            <Field
-              label="Template"
-              htmlFor={`${id}-tpl`}
-              hint={
-                autoTemplate0
-                  ? "template0: template1 only allows its own encoding and collation."
-                  : undefined
-              }
+          <div className="flex flex-col gap-3">
+            <FormField
+              label="Name"
+              htmlFor={`${id}-name`}
+              error={submitted && problem ? problem : null}
             >
-              <NativeSelect
-                id={`${id}-tpl`}
-                value={template}
-                disabled={loading}
-                onChange={(e) => update({ template: e.target.value })}
+              <Input
+                id={`${id}-name`}
+                autoFocus
+                value={form.name}
+                onChange={(e) => update({ name: e.target.value })}
+                placeholder="new_database"
+                aria-invalid={submitted && problem !== null}
+                aria-describedby={submitted && problem ? `${id}-name-error` : undefined}
+                className="h-7 rounded-md font-mono text-xs md:text-xs"
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </FormField>
+            <div className="grid grid-cols-2 gap-3">
+              <FormField
+                label={driver === "mysql" ? "Character set" : "Encoding"}
+                htmlFor={`${id}-enc`}
               >
-                <option value="">Default (template1)</option>
-                {options.data?.templates.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
+                <NativeSelect
+                  id={`${id}-enc`}
+                  value={encoding}
+                  disabled={loading}
+                  onChange={(e) => setEncoding(e.target.value)}
+                >
+                  {loading && <option value="" />}
+                  {options.data?.encodings.map((e) => (
+                    <option key={e.name} value={e.name}>
+                      {e.description ? `${e.name} — ${e.description}` : e.name}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </FormField>
+              <FormField label="Collation" htmlFor={`${id}-coll`}>
+                <NativeSelect
+                  id={`${id}-coll`}
+                  value={form.collation}
+                  disabled={loading}
+                  onChange={(e) => update({ collation: e.target.value })}
+                >
+                  <option value="">
+                    {defaultCollation ? `Default (${defaultCollation})` : "Default"}
                   </option>
-                ))}
-              </NativeSelect>
-            </Field>
-          )}
-          {options.isError && <ErrorLine error={errorInfo(options.error)} />}
-          <div className="flex items-center">
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              aria-expanded={showSql}
-              onClick={() => setShowSql((v) => !v)}
-            >
-              <ChevronRight className={cn("transition-transform", showSql && "rotate-90")} />
-              Preview SQL
-            </Button>
-          </div>
-          {showSql && (
-            <div className="border-border bg-surface-2 max-h-40 min-h-10 overflow-auto rounded-md border px-3 py-2">
-              {problem ? (
-                <p className="text-muted-foreground text-[11px]">{problem}</p>
-              ) : preview.isError ? (
-                <ErrorLine error={errorInfo(preview.error)} />
-              ) : preview.data ? (
-                <SqlBlock sql={preview.data.join(";\n")} dialect={coreDialect(driver)} />
-              ) : (
-                <QuietStatus />
-              )}
+                  {collations.map((c) => (
+                    <option key={`${c.name}\u0000${c.encoding ?? ""}`} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </FormField>
             </div>
-          )}
-          <ErrorLine error={error} />
+            {driver === "postgres" && (
+              <FormField
+                label="Template"
+                htmlFor={`${id}-tpl`}
+                hint={
+                  autoTemplate0
+                    ? "template0: template1 only allows its own encoding and collation."
+                    : undefined
+                }
+              >
+                <NativeSelect
+                  id={`${id}-tpl`}
+                  value={template}
+                  disabled={loading}
+                  onChange={(e) => update({ template: e.target.value })}
+                >
+                  <option value="">Default (template1)</option>
+                  {options.data?.templates.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </FormField>
+            )}
+            {options.isError && <ErrorLine error={errorInfo(options.error)} />}
+            <div className="flex items-center">
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                aria-expanded={showSql}
+                onClick={() => setShowSql((v) => !v)}
+              >
+                <ChevronRight
+                  aria-hidden
+                  className={cn(
+                    "transition-transform duration-150 motion-reduce:transition-none",
+                    showSql && "rotate-90",
+                  )}
+                />
+                Preview SQL
+              </Button>
+            </div>
+            {showSql && (
+              <div className="border-border bg-surface-2 max-h-40 min-h-10 overflow-auto rounded-md border px-3 py-2">
+                {problem ? (
+                  <p className="text-muted-foreground text-xs">{problem}</p>
+                ) : preview.isError ? (
+                  <ErrorLine error={errorInfo(preview.error)} />
+                ) : preview.data ? (
+                  <SqlBlock sql={preview.data.join(";\n")} dialect={coreDialect(driver)} />
+                ) : (
+                  <QuietStatus />
+                )}
+              </div>
+            )}
+            <ErrorLine error={error} />
+          </div>
           <DialogFooter className="items-center">
-            <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy}>
+            <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={busy}>
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy}>
               Create
-              <Kbd
-                combo="Mod+Enter"
-                className="border-primary-foreground/30 ml-1 bg-transparent text-inherit"
-              />
+              <KbdHint combo="Mod+Enter" />
             </Button>
           </DialogFooter>
         </form>
@@ -307,7 +318,7 @@ export function RenameDatabaseDialog({
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
       <DialogContent className="sm:max-w-md">
-        <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-3">
+        <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle className="text-sm">Rename Database</DialogTitle>
             <DialogDescription className="font-mono text-xs">{database}</DialogDescription>
@@ -315,22 +326,22 @@ export function RenameDatabaseDialog({
           {isCurrent ? (
             <ErrorLine error={currentDatabaseRefusal(database, "rename")} />
           ) : (
-            <Field label="New name" htmlFor={`${id}-name`}>
+            <FormField label="New name" htmlFor={`${id}-name`}>
               <Input
                 id={`${id}-name`}
                 autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 onFocus={(e) => e.currentTarget.select()}
-                className="h-7 font-mono text-xs md:text-xs"
+                className="font-mono text-sm"
                 spellCheck={false}
                 autoComplete="off"
               />
-            </Field>
+            </FormField>
           )}
           <ErrorLine error={error} />
           <DialogFooter>
-            <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy}>
+            <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={busy}>
               Cancel
             </Button>
             <Button type="submit" size="sm" disabled={busy || isCurrent || problem !== null}>
@@ -384,7 +395,7 @@ export function DropDatabaseDialog({
   return (
     <AlertDialog open onOpenChange={(open) => !open && !busy && onClose()}>
       <AlertDialogContent
-        className="data-[size=default]:sm:max-w-md"
+        className="data-[size=default]:sm:max-w-[34rem]"
         onOpenAutoFocus={(e) => {
           // Start in the confirmation field (AlertDialog focuses Cancel by default).
           if (database === null) return;
@@ -401,14 +412,14 @@ export function DropDatabaseDialog({
         >
           <AlertDialogHeader>
             <AlertDialogTitle className="text-sm">
-              {target ? `Drop database ${target}?` : "Drop Database"}
+              {target ? `Drop database “${target}”?` : "Drop database?"}
             </AlertDialogTitle>
             <AlertDialogDescription className="text-xs">
               The database and everything in it are permanently deleted. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {database === null && (
-            <Field label="Database" htmlFor={`${id}-db`}>
+            <FormField label="Database" htmlFor={`${id}-db`}>
               <NativeSelect
                 id={`${id}-db`}
                 value={picked}
@@ -426,12 +437,12 @@ export function DropDatabaseDialog({
                   </option>
                 ))}
               </NativeSelect>
-            </Field>
+            </FormField>
           )}
           {isCurrent ? (
             <ErrorLine error={currentDatabaseRefusal(target, "drop")} />
           ) : (
-            <Field label={`Type ${target || "the name"} to confirm`} htmlFor={`${id}-confirm`}>
+            <FormField label={`Type ${target || "the name"} to confirm`} htmlFor={`${id}-confirm`}>
               <Input
                 id={`${id}-confirm`}
                 ref={confirmRef}
@@ -439,11 +450,11 @@ export function DropDatabaseDialog({
                 disabled={target === ""}
                 onChange={(e) => setTyped(e.target.value)}
                 placeholder={target}
-                className="h-7 font-mono text-xs md:text-xs"
+                className="h-7 rounded-md font-mono text-xs md:text-xs"
                 spellCheck={false}
                 autoComplete="off"
               />
-            </Field>
+            </FormField>
           )}
           <ErrorLine error={error} />
           <AlertDialogFooter>

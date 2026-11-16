@@ -1,6 +1,7 @@
 import { Plug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
+import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
 import { searchMenu, searchSettingsEntries } from "@/features/objects/menu";
 import { searchHint } from "@/features/objects/search";
@@ -12,7 +13,6 @@ import {
   useSidebarPaneId,
   type SidebarPaneId,
 } from "@/features/queries/sidebarPane";
-import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { capsOf } from "@/lib/caps";
@@ -194,10 +194,16 @@ function ItemsPane(props: Parameters<typeof DatabaseItemsPane>[0]) {
       // database list opens from Ctrl+K or the toolbar.
       <div
         hidden={props.hidden}
-        className="text-muted-foreground flex min-h-0 flex-1 items-center justify-center p-4 text-center text-xs font-medium"
+        className="text-muted-foreground flex min-h-0 flex-1 items-center justify-center p-4 text-center text-xs"
       >
-        No database selected, press {formatCombo(shortcutFor("palette.databases") ?? "Mod+K")} to
-        select a database
+        <p>
+          No database selected, press{" "}
+          <Kbd
+            combo={shortcutFor("palette.databases") ?? "Mod+K"}
+            className="mx-0.5 align-middle"
+          />{" "}
+          to select a database
+        </p>
       </div>
     );
   return <DatabaseItemsPane {...props} />;

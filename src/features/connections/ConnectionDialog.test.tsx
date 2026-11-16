@@ -89,12 +89,12 @@ describe("ConnectionDialog — new connection", () => {
   it("starts with the driver picker; a double-click on a tile opens the form for it", async () => {
     const user = userEvent.setup();
     renderDialog();
-    const picker = await screen.findByRole("dialog", { name: "New connection" });
+    const picker = await screen.findByRole("dialog", { name: "New Connection" });
     const tiles = within(picker).getAllByRole("radio");
     expect(tiles.map((t) => t.textContent)).toEqual(["PostgreSQL", "MySQL", "MariaDB", "SQLite"]);
     expect(tiles[0]).toHaveAttribute("aria-checked", "true");
     await user.dblClick(within(picker).getByRole("radio", { name: "MySQL" }));
-    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
+    const form = await screen.findByRole("dialog", { name: "New MySQL Connection" });
     expect(within(form).getByLabelText("Ver.")).toHaveTextContent("Default");
     expect(within(form).getByLabelText("Port")).toHaveValue("3306");
     expect(within(form).getByLabelText("Name")).toHaveFocus();
@@ -103,9 +103,9 @@ describe("ConnectionDialog — new connection", () => {
   it("MariaDB has its own tile: the MySQL driver set to Ver. ▸ MariaDB", async () => {
     const user = userEvent.setup();
     renderDialog();
-    const picker = await screen.findByRole("dialog", { name: "New connection" });
+    const picker = await screen.findByRole("dialog", { name: "New Connection" });
     await user.dblClick(within(picker).getByRole("radio", { name: "MariaDB" }));
-    const form = await screen.findByRole("dialog", { name: "New MariaDB connection" });
+    const form = await screen.findByRole("dialog", { name: "New MariaDB Connection" });
     expect(within(form).getByLabelText("Driver")).toHaveTextContent("MySQL");
     expect(within(form).getByLabelText("Ver.")).toHaveTextContent("MariaDB");
     expect(within(form).getByLabelText("Port")).toHaveValue("3306");
@@ -114,7 +114,7 @@ describe("ConnectionDialog — new connection", () => {
   it("the picker works from the keyboard: → selects the next tile, ↩ creates", async () => {
     const user = userEvent.setup();
     renderDialog();
-    const picker = await screen.findByRole("dialog", { name: "New connection" });
+    const picker = await screen.findByRole("dialog", { name: "New Connection" });
     expect(within(picker).getByRole("radio", { name: /PostgreSQL/ })).toHaveFocus();
     await user.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}");
     expect(within(picker).getByRole("radio", { name: /SQLite/ })).toHaveFocus();
@@ -123,7 +123,7 @@ describe("ConnectionDialog — new connection", () => {
       "true",
     );
     await user.keyboard("{Enter}");
-    const form = await screen.findByRole("dialog", { name: "New SQLite connection" });
+    const form = await screen.findByRole("dialog", { name: "New SQLite Connection" });
     expect(within(form).getByLabelText("Database file")).toBeInTheDocument();
     // SQLite over SSH (the file is downloaded); Advanced carries the foreign-keys switch.
     expect(within(form).getByRole("button", { name: "Over SSH" })).toBeInTheDocument();
@@ -138,7 +138,7 @@ describe("ConnectionDialog — new connection", () => {
     await user.click(
       within(await screen.findByRole("dialog")).getByRole("button", { name: "Create" }),
     );
-    const form = await screen.findByRole("dialog", { name: "New PostgreSQL connection" });
+    const form = await screen.findByRole("dialog", { name: "New PostgreSQL Connection" });
     await user.click(within(form).getByRole("button", { name: "Save" }));
     expect(within(form).getByText("Name is required")).toBeInTheDocument();
     expect(within(form).getByText("User is required")).toBeInTheDocument();
@@ -175,7 +175,7 @@ describe("ConnectionDialog — form", () => {
     const { onOpenChange } = renderDialog({
       prefill: parseConnectionUrl("mysql://root@127.0.0.1/shop?name=Shop%20copy"),
     });
-    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
+    const form = await screen.findByRole("dialog", { name: "New MySQL Connection" });
     await user.type(within(form).getByLabelText("Database"), "{Enter}");
     await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
     const saved = await save.mock.results[0]!.value;
@@ -219,7 +219,7 @@ describe("ConnectionDialog — form", () => {
         "postgresql://app:s3cret@db.example.com:6543/shop?name=Shop&sslmode=require",
       ),
     });
-    const form = await screen.findByRole("dialog", { name: "New PostgreSQL connection" });
+    const form = await screen.findByRole("dialog", { name: "New PostgreSQL Connection" });
     expect(within(form).getByLabelText("Name")).toHaveValue("Shop");
     expect(within(form).getByLabelText("Host")).toHaveValue("db.example.com");
     expect(within(form).getByLabelText("Port")).toHaveValue("6543");
@@ -357,7 +357,7 @@ describe("ConnectionDialog — TablePlus parity", () => {
     const { onOpenChange, onSaved } = renderDialog({
       prefill: parseConnectionUrl("mysql://root@127.0.0.1/shop?name=Shop"),
     });
-    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
+    const form = await screen.findByRole("dialog", { name: "New MySQL Connection" });
     await user.click(within(form).getByRole("button", { name: "Test" }));
     expect(await within(form).findByRole("status")).toHaveTextContent(/MySQL 9\.6\.0/);
     expect(save).toHaveBeenCalledTimes(1);
@@ -490,7 +490,7 @@ describe("ConnectionDialog — TablePlus parity", () => {
     act(() =>
       view.dispatch({ changes: { from: 0, insert: "SET search_path = app;\nSET jit = off;" } }),
     );
-    await user.click(within(editor).getByRole("button", { name: "Save" }));
+    await user.click(within(editor).getByRole("button", { name: /^Save/ }));
     expect(screen.queryByRole("dialog", { name: "Bootstrap commands" })).toBeNull();
     expect(within(form).getByTestId("bootstrap-summary")).toHaveTextContent(
       "SET search_path = app; (+1 more)",
@@ -507,7 +507,7 @@ describe("ConnectionDialog — TablePlus parity", () => {
     const save = vi.spyOn(ipc.profiles, "save");
     const user = userEvent.setup();
     renderDialog({ prefill: parseConnectionUrl("postgres://app@db/x?name=Safe") });
-    const form = await screen.findByRole("dialog", { name: "New PostgreSQL connection" });
+    const form = await screen.findByRole("dialog", { name: "New PostgreSQL Connection" });
     await user.click(within(form).getByRole("button", { name: "Advanced" }));
     const select = within(form).getByRole("combobox", { name: "Safe mode" });
     expect(select).toHaveTextContent("Alert Mode 2");
@@ -620,10 +620,10 @@ describe("ConnectionDialog — groups", () => {
     const save = vi.spyOn(ipc.profiles, "save");
     const user = userEvent.setup();
     renderDialog({ prefill: { values: { group: "Clients / Acme" }, password: null } });
-    const picker = await screen.findByRole("dialog", { name: "New connection" });
+    const picker = await screen.findByRole("dialog", { name: "New Connection" });
     await user.click(within(picker).getByRole("radio", { name: /MySQL/ }));
     await user.click(within(picker).getByRole("button", { name: "Create" }));
-    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
+    const form = await screen.findByRole("dialog", { name: "New MySQL Connection" });
     expect(within(form).getByLabelText("Group")).toHaveValue("Clients / Acme");
     expect(within(form).getByLabelText("Port")).toHaveValue("3306");
     await user.type(within(form).getByLabelText("Name"), "Acme");
@@ -746,7 +746,7 @@ describe("ConnectionDialog — conn3a options", () => {
     const options = screen.getAllByRole("option").map((o) => o.textContent);
     expect(options).toEqual(["PREFERRED", "ENFORCE", "VERIFY-SERVER-CERT"]);
     await user.click(screen.getByRole("option", { name: "ENFORCE" }));
-    await user.click(within(form).getByRole("button", { name: /Other options/ }));
+    await user.click(within(form).getByRole("button", { name: /Other Options/ }));
     await user.click(
       screen.getByRole("menuitemcheckbox", { name: "Enable LOAD DATA LOCAL INFILE" }),
     );
@@ -771,7 +771,7 @@ describe("ConnectionDialog — conn3a options", () => {
     expect(await within(form).findByText(/DIRECT needs the SSL mode require/)).toBeInTheDocument();
     expect(save).not.toHaveBeenCalled();
     await choose(user, form, "SSL mode", "require");
-    await user.click(within(form).getByRole("button", { name: /Other options/ }));
+    await user.click(within(form).getByRole("button", { name: /Other Options/ }));
     await user.click(screen.getByRole("menuitemcheckbox", { name: "Disable channel binding" }));
     await user.click(within(form).getByRole("button", { name: "Advanced" }));
     await user.type(within(form).getByLabelText("Encoding"), "LATIN1");
@@ -797,7 +797,7 @@ describe("ConnectionDialog — conn3a options", () => {
       within(editor).getByLabelText("Shell script, run before connecting"),
       "cloud-sql-proxy &",
     );
-    await user.click(within(editor).getByRole("button", { name: "Save" }));
+    await user.click(within(editor).getByRole("button", { name: /^Save/ }));
     expect(within(form).getByTestId("bootstrap-script-summary")).toHaveTextContent("shell script");
     await user.click(within(form).getByRole("button", { name: "Save" }));
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
@@ -872,7 +872,7 @@ describe("ConnectionDialog — Import from URL, Ver. and timeout", () => {
   it("the driver step has Import from URL…: it closes the sheet and opens the URL dialog", async () => {
     const user = userEvent.setup();
     const { onOpenChange } = renderDialog();
-    const picker = await screen.findByRole("dialog", { name: "New connection" });
+    const picker = await screen.findByRole("dialog", { name: "New Connection" });
     expect(useConnectionDialog.getState().urlOpen).toBe(false);
     await user.click(within(picker).getByRole("button", { name: "Import from URL…" }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -884,7 +884,7 @@ describe("ConnectionDialog — Import from URL, Ver. and timeout", () => {
     const { onOpenChange } = renderDialog({
       prefill: parseConnectionUrl("mysql://app@db.example.com/shop"),
     });
-    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
+    const form = await screen.findByRole("dialog", { name: "New MySQL Connection" });
     await user.click(within(form).getByRole("button", { name: "Import from URL…" }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(useConnectionDialog.getState().urlOpen).toBe(true);
@@ -956,7 +956,7 @@ describe("ConnectionDialog — Import from URL, Ver. and timeout", () => {
   it("a new connection starts with the preference's timeout, 60 by default", async () => {
     const user = userEvent.setup();
     renderDialog({ prefill: parseConnectionUrl("mysql://app@db.example.com/shop") });
-    const form = await screen.findByRole("dialog", { name: "New MySQL connection" });
+    const form = await screen.findByRole("dialog", { name: "New MySQL Connection" });
     await user.click(within(form).getByRole("button", { name: "Advanced" }));
     expect(within(form).getByLabelText("Connect timeout")).toHaveValue("60");
   });

@@ -52,19 +52,19 @@ export function CustomColorSwatch({
           title={custom ? `Custom: ${custom}` : "Custom…"}
           disabled={disabled}
           className={cn(
-            "ring-offset-background size-4 rounded-full ring-offset-2 transition-transform outline-none",
-            "focus-visible:ring-ring focus-visible:ring-2 disabled:opacity-60",
-            custom ? "ring-foreground/60 scale-110 ring-2" : "hover:scale-110",
+            "ring-offset-background size-4 rounded-full ring-offset-2 transition-shadow outline-none",
+            "focus-visible:ring-ring focus-visible:ring-2 disabled:opacity-50",
+            custom ? "ring-foreground/60 ring-2" : "hover:ring-foreground/25 hover:ring-2",
             className,
           )}
           style={{ background: custom ?? RAINBOW }}
         />
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-56 gap-2 p-3">
+      <PopoverContent align="end" className="w-64 gap-2 p-3 text-xs">
         <div className="flex items-center gap-2">
           <input
             type="color"
-            aria-label="Colour picker"
+            aria-label="Color picker"
             value={parsed ?? custom ?? "#3b82f6"}
             onChange={(e) => {
               setDraft(e.target.value);
@@ -90,7 +90,7 @@ export function CustomColorSwatch({
             placeholder="#3b82f6"
             spellCheck={false}
             autoComplete="off"
-            className="h-7 min-w-0 flex-1 font-mono text-xs"
+            className="h-7 min-w-0 flex-1 rounded-md font-mono text-xs md:text-xs"
             aria-invalid={draft !== "" && !parsed ? true : undefined}
           />
         </div>

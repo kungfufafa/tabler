@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toIpcError, type BrowsePage, type TableRef } from "@/lib/ipc";
+import { cn } from "@/lib/utils";
 import { displayValue } from "@/lib/values";
 import { tableFacts, type IndexChoice, type TableInfo } from "./info";
 
@@ -49,10 +50,10 @@ export function TableInfoDialog({
   const facts = tableFacts(info);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="sm:max-w-[34rem]">
         <DialogHeader>
-          <DialogTitle>{table}</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-sm">{table}</DialogTitle>
+          <DialogDescription className="text-xs">
             DynamoDB refreshes the item count and size about every six hours.
           </DialogDescription>
         </DialogHeader>
@@ -138,8 +139,8 @@ export function IndexBrowserDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[min(40rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(56rem,calc(100%-2rem))]">
         <DialogHeader>
-          <DialogTitle>Browse an index of {table.name}</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-sm">Browse an Index of {table.name}</DialogTitle>
+          <DialogDescription className="text-xs">
             {chosen
               ? `${chosen.global ? "Global" : "Local"} index on ${chosen.keys.join(", ")}: its items are read only here.`
               : "Read only."}
@@ -153,18 +154,24 @@ export function IndexBrowserDialog({
               setCursors([null]);
             }}
           >
-            <SelectTrigger className="w-64" aria-label="Index">
+            <SelectTrigger size="sm" className="w-64 text-xs" aria-label="Index">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {indexes.map((i) => (
-                <SelectItem key={i.name} value={i.name}>
+                <SelectItem key={i.name} value={i.name} className="text-xs">
                   {i.name}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-          <span className="text-muted-foreground text-xs" role="status">
+          <span
+            className={cn(
+              "text-xs tabular-nums",
+              page.state === "failed" ? "text-error" : "text-muted-foreground",
+            )}
+            role="status"
+          >
             {page.state === "loading" ? (
               <QuietStatus />
             ) : page.state === "failed" ? (
@@ -174,23 +181,36 @@ export function IndexBrowserDialog({
             )}
           </span>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto rounded border">
+        <div className="min-h-0 flex-1 overflow-auto rounded-md border">
           {page.state === "done" && (
             <table className="w-full text-xs" data-testid="dynamo-index-page">
-              <thead className="bg-muted sticky top-0">
+              <thead className="bg-surface-2/95 sticky top-0">
                 <tr>
                   {page.page.columns.map((c) => (
-                    <th key={c.name} className="px-2 py-1 text-left font-medium whitespace-nowrap">
+                    <th
+                      key={c.name}
+                      className="text-muted-foreground h-7 px-2 text-left font-medium whitespace-nowrap"
+                    >
                       {c.name}
                     </th>
                   ))}
                 </tr>
               </thead>
               <tbody>
+                {page.page.rows.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={Math.max(page.page.columns.length, 1)}
+                      className="text-muted-foreground py-6 text-center text-xs"
+                    >
+                      No items
+                    </td>
+                  </tr>
+                )}
                 {page.page.rows.map((row, r) => (
-                  <tr key={r} className="border-t">
+                  <tr key={r} className="hover:bg-row-hover border-t">
                     {row.map((v, c) => (
-                      <td key={c} className="max-w-64 truncate px-2 py-1 font-mono">
+                      <td key={c} className="h-7 max-w-64 truncate px-2 font-mono">
                         {displayValue(v, true).text}
                       </td>
                     ))}
@@ -200,23 +220,25 @@ export function IndexBrowserDialog({
             </table>
           )}
         </div>
-        <DialogFooter>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={cursors.length < 2 || page.state === "loading"}
-            onClick={() => setCursors((c) => c.slice(0, -1))}
-          >
-            Previous
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={next === null || page.state === "loading"}
-            onClick={() => setCursors((c) => [...c, next])}
-          >
-            Next
-          </Button>
+        <DialogFooter className="sm:justify-between">
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={cursors.length < 2 || page.state === "loading"}
+              onClick={() => setCursors((c) => c.slice(0, -1))}
+            >
+              Previous
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={next === null || page.state === "loading"}
+              onClick={() => setCursors((c) => [...c, next])}
+            >
+              Next
+            </Button>
+          </div>
           <Button size="sm" onClick={() => onOpenChange(false)}>
             Close
           </Button>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { SectionLabel } from "@/components/SectionLabel";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -21,7 +22,7 @@ export function SectionShell({
         data-settings-drag=""
         className="border-border flex h-11 shrink-0 items-center gap-3 border-b pr-12 pl-5"
       >
-        <h2 className="text-[13px] font-semibold">{title}</h2>
+        <h2 className="text-sm font-medium">{title}</h2>
         {actions && <div className="ml-auto flex items-center">{actions}</div>}
       </header>
       <div
@@ -40,7 +41,7 @@ export function SectionShell({
 export function SettingGroup({ title, children }: { title?: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-1.5">
-      {title && <h3 className="text-muted-foreground px-1 text-[11px] font-medium">{title}</h3>}
+      {title && <SectionLabel className="px-1">{title}</SectionLabel>}
       <div className="border-border bg-surface divide-border divide-y rounded-lg border">
         {children}
       </div>
@@ -63,13 +64,13 @@ export function SettingRow({
   return (
     <div className="flex min-h-11 items-center gap-6 px-3 py-2">
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <label id={id ? `${id}-label` : undefined} htmlFor={id} className="text-[13px] leading-5">
+        <label id={id ? `${id}-label` : undefined} htmlFor={id} className="text-sm leading-5">
           {label}
         </label>
         {description && (
           <div
             id={id ? `${id}-description` : undefined}
-            className="text-muted-foreground text-[11px] leading-4"
+            className="text-muted-foreground text-xs leading-4"
           >
             {description}
           </div>
@@ -150,7 +151,7 @@ export function Segmented<T extends string | number>({
             onClick={() => onChange(o.value)}
             onKeyDown={(e) => onKeyDown(e, i)}
             className={cn(
-              "text-muted-foreground hover:text-foreground flex h-full min-w-11 items-center justify-center gap-1.5 rounded-[5px] px-2.5 text-xs font-medium tabular-nums transition-colors outline-none [&_svg]:size-3.5",
+              "text-muted-foreground hover:text-foreground flex h-full min-w-11 items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium tabular-nums transition-colors outline-none [&_svg]:size-3.5",
               // Tailwind v4: `outline-none` sets --tw-outline-style:none, which `outline-2` reads back,
               // so the focus ring needs an explicit style to draw at all.
               "focus-visible:outline-ring/70 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-solid",
@@ -242,7 +243,7 @@ export function NumberField({
             commit();
           }
         }}
-        className="h-7 w-16 [appearance:textfield] rounded-md px-2 text-right text-xs tabular-nums [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        className="h-7 w-16 [appearance:textfield] rounded-md px-2 text-right text-xs tabular-nums md:text-xs [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
       />
       {suffix && <span className="text-muted-foreground text-xs">{suffix}</span>}
     </div>

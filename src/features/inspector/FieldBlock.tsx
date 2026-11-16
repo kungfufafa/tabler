@@ -11,6 +11,7 @@ import {
   KeyRound,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Kbd } from "@/components/Kbd";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -31,7 +32,7 @@ import { NOW_KINDS, NOW_LABEL, nowValue } from "@/features/datagrid/setValue";
 import { acceptsEmpty, type GridColumn } from "@/features/datagrid/types";
 import { actions } from "@/features/palette/actions";
 import type { Value } from "@/lib/ipc";
-import { comboFromEvent, formatCombo } from "@/lib/keys/combo";
+import { comboFromEvent } from "@/lib/keys/combo";
 import { cn } from "@/lib/utils";
 import { decodeBytesText, editText, formatBytes, hasLineBreak } from "@/lib/values";
 import { copy } from "./copy";
@@ -53,7 +54,7 @@ const BLOB_TEXT_CHARS = 40;
 const BOX = cn(
   "border-border bg-surface text-foreground block w-full min-w-0 rounded-md border px-2 font-mono text-[12px] leading-[18px] outline-none",
   "placeholder:text-null placeholder:italic",
-  "focus:border-ring focus:ring-ring/30 focus:ring-2",
+  "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-2",
 );
 
 export interface FieldBlockProps {
@@ -291,7 +292,7 @@ export function FieldBlock({
   const boxClass = cn(
     BOX,
     changed && "bg-changed",
-    error && "border-error focus:border-error focus:ring-error/30",
+    error && "border-error focus-visible:border-error focus-visible:ring-error/30",
   );
   const label = col.name;
 
@@ -315,7 +316,7 @@ export function FieldBlock({
         <span
           className={cn(
             "text-muted-foreground selectable truncate",
-            blobText !== null ? "shrink-0 font-sans text-[10px]" : "min-w-0 flex-1",
+            blobText !== null ? "shrink-0 font-sans text-xs" : "min-w-0 flex-1",
           )}
         >
           {formatBytes(value.v.len)} binary{truncatedBlob ? " (preview)" : ""}
@@ -325,7 +326,7 @@ export function FieldBlock({
           onClick={onViewCell}
           aria-label={`Show ${col.name} in the Cell view`}
           title="Hex dump and full value in the Cell view"
-          className="text-brand shrink-0 font-sans text-[11px] hover:underline"
+          className="text-brand focus-visible:ring-ring/50 shrink-0 rounded-sm font-sans text-xs outline-none hover:underline focus-visible:ring-2"
         >
           View
         </button>
@@ -377,7 +378,7 @@ export function FieldBlock({
             : undefined
         }
         className={cn(
-          "bg-surface focus-within:border-ring focus-within:ring-ring/30 min-h-7 w-full min-w-0 font-mono focus-within:ring-2",
+          "bg-surface focus-within:border-ring focus-within:ring-ring/50 min-h-7 w-full min-w-0 font-mono focus-within:ring-2",
           changed && "bg-changed [&_.cm-editor]:bg-transparent",
           error && "border-error focus-within:border-error focus-within:ring-error/30",
         )}
@@ -418,7 +419,7 @@ export function FieldBlock({
     );
   }
 
-  const saveKeys = formatCombo(multiline ? "Mod+Enter" : "Enter");
+  const saveCombo = multiline ? "Mod+Enter" : "Enter";
   return (
     <div
       ref={blockRef}
@@ -441,7 +442,7 @@ export function FieldBlock({
           {col.name}
         </span>
         {hidden && (
-          <span className="text-muted-foreground border-border shrink-0 rounded border px-1 text-[10px] leading-3">
+          <span className="border-border text-muted-foreground inline-flex h-4 shrink-0 items-center rounded-sm border px-1 text-[10px] leading-none font-medium">
             hidden
           </span>
         )}
@@ -489,7 +490,7 @@ export function FieldBlock({
                 title={sortKeys ? "Show the keys as stored" : "Sort keys"}
                 onClick={() => changeSort(!sortKeys)}
                 className={cn(
-                  "hover:text-foreground hover:bg-accent flex size-4 shrink-0 items-center justify-center rounded opacity-60 group-hover/field:opacity-100 focus-visible:opacity-100",
+                  "hover:text-foreground hover:bg-accent focus-visible:ring-ring/50 flex size-4 shrink-0 items-center justify-center rounded opacity-60 outline-none group-hover/field:opacity-100 focus-visible:opacity-100 focus-visible:ring-2",
                   sortKeys ? "text-brand" : "text-muted-foreground",
                 )}
               >
@@ -504,7 +505,7 @@ export function FieldBlock({
                 title={prettyJson ? "Show the JSON as stored" : "Pretty JSON"}
                 onClick={() => setPrettyJson(!prettyJson)}
                 className={cn(
-                  "hover:text-foreground hover:bg-accent flex size-4 shrink-0 items-center justify-center rounded opacity-60 group-hover/field:opacity-100 focus-visible:opacity-100",
+                  "hover:text-foreground hover:bg-accent focus-visible:ring-ring/50 flex size-4 shrink-0 items-center justify-center rounded opacity-60 outline-none group-hover/field:opacity-100 focus-visible:opacity-100 focus-visible:ring-2",
                   prettyJson ? "text-brand" : "text-muted-foreground",
                 )}
               >
@@ -517,7 +518,7 @@ export function FieldBlock({
               title={truncatedBlob ? "Only a preview is loaded" : "Copy value"}
               disabled={truncatedBlob}
               onClick={() => copy(copyText(value))}
-              className="text-muted-foreground hover:text-foreground hover:bg-accent flex size-4 shrink-0 items-center justify-center rounded opacity-0 group-hover/field:opacity-100 focus-visible:opacity-100 disabled:opacity-0"
+              className="text-muted-foreground hover:text-foreground hover:bg-accent focus-visible:ring-ring/50 flex size-4 shrink-0 items-center justify-center rounded opacity-0 outline-none group-hover/field:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 disabled:opacity-0"
             >
               <Copy className="size-3" />
             </button>
@@ -526,13 +527,14 @@ export function FieldBlock({
       </div>
       {box}
       {error ? (
-        <p role="alert" className="text-error mt-1 text-[11px] leading-4">
+        <p role="alert" className="text-error selectable mt-1 text-xs leading-4">
           {error}
         </p>
       ) : (
         dirty && (
-          <p className="text-muted-foreground mt-0.5 text-[10px] leading-3">
-            {saveKeys} to stage · {formatCombo("Escape")} to revert
+          <p className="text-muted-foreground mt-1 text-xs leading-4">
+            <Kbd combo={saveCombo} className="mr-0.5 align-middle" /> to stage ·{" "}
+            <Kbd combo="Escape" className="mx-0.5 align-middle" /> to revert
           </p>
         )
       )}
@@ -655,15 +657,14 @@ function FieldMenu({
           type="button"
           aria-label={`${col.name} options`}
           title="Field options"
-          className="text-muted-foreground hover:text-foreground hover:bg-accent data-[state=open]:bg-accent data-[state=open]:text-foreground flex h-4 w-5 shrink-0 items-center justify-center rounded opacity-60 group-hover/field:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+          className="text-muted-foreground hover:text-foreground hover:bg-accent data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:ring-ring/50 flex h-4 w-5 shrink-0 items-center justify-center rounded opacity-60 outline-none group-hover/field:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 data-[state=open]:opacity-100"
         >
-          <Ellipsis className="size-3.5" />
+          <Ellipsis className="size-3" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-auto min-w-40 text-xs">
+      <DropdownMenuContent align="end" className="w-auto min-w-40">
         {col.nullable && (
           <DropdownMenuItem
-            className="text-xs"
             disabled={!mixed && value.t === "null"}
             onSelect={() => onStage({ t: "null" })}
           >
@@ -671,17 +672,12 @@ function FieldMenu({
           </DropdownMenuItem>
         )}
         {acceptsEmpty(col) && (
-          <DropdownMenuItem
-            className="text-xs"
-            disabled={isEmpty}
-            onSelect={() => onStage({ t: "text", v: "" })}
-          >
+          <DropdownMenuItem disabled={isEmpty} onSelect={() => onStage({ t: "text", v: "" })}>
             Set EMPTY
           </DropdownMenuItem>
         )}
         {col.hasDefault && (
           <DropdownMenuItem
-            className="text-xs"
             disabled={!mixed && value.t === "default"}
             onSelect={() => onStage({ t: "default" })}
           >
@@ -690,7 +686,6 @@ function FieldMenu({
         )}
         {now && (
           <DropdownMenuItem
-            className="text-xs"
             onSelect={() => {
               const v = nowValue(col.kind);
               if (v) onStage(v);
@@ -700,14 +695,11 @@ function FieldMenu({
           </DropdownMenuItem>
         )}
         {col.kind === "json" && (
-          <DropdownMenuItem className="text-xs" onSelect={onEditJson}>
-            Edit JSON…
-          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={onEditJson}>Edit JSON…</DropdownMenuItem>
         )}
         {json && (
           <>
             <DropdownMenuCheckboxItem
-              className="text-xs"
               checked={json.pretty}
               onCheckedChange={(v) => json.onPrettyChange(v === true)}
             >
@@ -715,19 +707,18 @@ function FieldMenu({
             </DropdownMenuCheckboxItem>
             {json.onSortChange && (
               <DropdownMenuCheckboxItem
-                className="text-xs"
                 checked={json.sort}
                 onCheckedChange={(v) => json.onSortChange?.(v === true)}
               >
-                Sort keys
+                Sort Keys
               </DropdownMenuCheckboxItem>
             )}
             {json.onReformat && (
               <>
-                <DropdownMenuItem className="text-xs" onSelect={() => json.onReformat?.(2)}>
+                <DropdownMenuItem onSelect={() => json.onReformat?.(2)}>
                   Format JSON
                 </DropdownMenuItem>
-                <DropdownMenuItem className="text-xs" onSelect={() => json.onReformat?.(null)}>
+                <DropdownMenuItem onSelect={() => json.onReformat?.(null)}>
                   Minify JSON
                 </DropdownMenuItem>
               </>
@@ -740,12 +731,10 @@ function FieldMenu({
           now ||
           col.kind === "json" ||
           !!json) && <DropdownMenuSeparator />}
-        <DropdownMenuItem className="text-xs" disabled={!canCopy} onSelect={onCopy}>
+        <DropdownMenuItem disabled={!canCopy} onSelect={onCopy}>
           Copy Value
         </DropdownMenuItem>
-        <DropdownMenuItem className="text-xs" onSelect={onViewCell}>
-          Show in Cell View
-        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onViewCell}>Show in Cell View</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

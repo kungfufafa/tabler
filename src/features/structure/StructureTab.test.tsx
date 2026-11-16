@@ -80,7 +80,7 @@ function type(input: HTMLInputElement, value: string) {
  * the table `title`, once its statements are listed.
  */
 async function structureSection(title = "users") {
-  const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+  const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
   const section = await within(sheet).findByRole("region", { name: `Structure ${title}` });
   await waitFor(() => expect(section).toHaveTextContent(/[A-Z]{3,}/));
   return { sheet, section };
@@ -160,7 +160,7 @@ describe("StructureTab", () => {
     expect(ops()).toEqual([]);
     await waitFor(() => expect(cell("c:nick:name").value).toBe("nick"));
     expect(cell("c:nick:name").closest("td")).not.toHaveClass("bg-changed");
-    await waitFor(() => expect(screen.queryByText("Preview changes")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Preview Changes")).not.toBeInTheDocument());
   });
 
   it("shows the failed statement and keeps the staged ops when apply fails", async () => {
@@ -294,16 +294,16 @@ describe("StructureTab", () => {
     for (const name of ["Column", "Index", "Open in SQL", "Refresh"])
       expect(within(bar).getByRole("button", { name })).toBeInTheDocument();
     expect(within(bar).getByRole("textbox", { name: "Search columns" })).toBeInTheDocument();
-    expect(within(bar).queryByRole("button", { name: "Review & apply" })).toBeNull();
+    expect(within(bar).queryByRole("button", { name: "Review and apply" })).toBeNull();
 
     type(cell("c:title:name"), "headline");
     expect(within(bar).getByText("1 change")).toBeInTheDocument();
     expect(within(bar).getByRole("button", { name: "Undo last change" })).toBeEnabled();
-    fireEvent.click(within(bar).getByRole("button", { name: "Review & apply" }));
+    fireEvent.click(within(bar).getByRole("button", { name: "Review and apply" }));
     const { section } = await structureSection("posts");
     expect(section).toHaveTextContent(/RENAME COLUMN/);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByText("Preview changes")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Preview Changes")).toBeNull());
     fireEvent.click(within(bar).getByRole("button", { name: "Discard all changes" }));
     expect(ops()).toEqual([]);
     expect(within(bar).queryByText("1 change")).toBeNull();
@@ -370,7 +370,7 @@ describe("StructureTab", () => {
     commitSheet(sheet);
     await screen.findByText(/Changes before it stay committed/);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByText("Preview changes")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Preview Changes")).not.toBeInTheDocument());
 
     const banner = screen.getByText(/The last apply stopped partway/).closest("[role='alert']")!;
     expect(banner).toHaveTextContent("1 statement already ran");
@@ -537,7 +537,7 @@ describe("StructureTab: order columns by, and bulk edit in the right sidebar", (
     expect(toggle).toHaveTextContent("Ordinal position");
 
     fireEvent.keyDown(toggle, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Order columns by Name" }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Order Columns by Name" }));
     expect(getPrefs().structureColumnOrder).toBe("name");
     expect(rowKeys()).toEqual([...ordinal].sort((a, b) => a!.localeCompare(b!)));
     expect(toggle).toHaveTextContent("Name");
@@ -547,7 +547,7 @@ describe("StructureTab: order columns by, and bulk edit in the right sidebar", (
 
     fireEvent.keyDown(toggle, { key: "Enter" });
     fireEvent.click(
-      await screen.findByRole("menuitemradio", { name: "Order columns by Ordinal position" }),
+      await screen.findByRole("menuitemradio", { name: "Order Columns by Ordinal Position" }),
     );
     expect(getPrefs().structureColumnOrder).toBe("ordinal");
     expect(rowKeys()).toEqual(ordinal);

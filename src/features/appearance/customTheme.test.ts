@@ -59,18 +59,18 @@ describe("parseThemeFile", () => {
     ["a bad base", file({ base: "sepia" }), /base must be/],
     ["tokens that are not an object", file({ tokens: [] }), /must be an object/],
     ["no tokens field", file({ tokens: undefined }), /must be an object/],
-    ["an unknown token", file({ tokens: { nonsense: "#fff" } }), /Unknown colour “nonsense”/],
+    ["an unknown token", file({ tokens: { nonsense: "#fff" } }), /Unknown color “nonsense”/],
     [
       "a prototype key",
       `{"format":"tabler-theme","version":1,"name":"a","base":"light","tokens":{"__proto__":"#fff"}}`,
-      /Unknown colour/,
+      /Unknown color/,
     ],
-    ["a non-colour value", file({ tokens: { background: "red" } }), /“background” is not a colour/],
-    ["a number as a colour", file({ tokens: { background: 12 } }), /not a colour/],
+    ["a non-colour value", file({ tokens: { background: "red" } }), /“background” is not a color/],
+    ["a number as a colour", file({ tokens: { background: 12 } }), /not a color/],
     [
       "css injection in a colour",
       file({ tokens: { background: "#fff; } body { display:none" } }),
-      /not a colour/,
+      /not a color/,
     ],
   ])("rejects %s", (_, text, message) => {
     const r = parseThemeFile(text);

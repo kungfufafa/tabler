@@ -2,6 +2,8 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, placeholder } from "@codemirror/view";
 import { useCallback, useRef } from "react";
+import { FormField } from "@/components/FormField";
+import { KbdHint } from "@/components/KbdHint";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -108,10 +110,10 @@ export function BootstrapCommandsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex flex-col gap-3 sm:max-w-xl">
+      <DialogContent className="flex flex-col sm:max-w-[34rem]">
         <DialogHeader>
-          <DialogTitle>Bootstrap commands</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-sm">Bootstrap commands</DialogTitle>
+          <DialogDescription className="text-xs">
             SQL run right after login, every time this connection opens a session (reconnects
             included). Separate statements with semicolons.
           </DialogDescription>
@@ -119,21 +121,34 @@ export function BootstrapCommandsDialog({
         <div
           ref={mount}
           data-testid="bootstrap-editor"
-          className="border-border h-44 overflow-hidden rounded-md border text-[13px]"
+          className="border-border h-44 overflow-hidden rounded-md border text-sm"
         />
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="bootstrap-script" className="text-foreground text-xs font-medium">
-            Shell script, run before connecting
-          </label>
+        <FormField
+          label="Shell script, run before connecting"
+          htmlFor="bootstrap-script"
+          hint={
+            <>
+              Runs in your login shell (<span className="font-mono">$SHELL -lc</span>, 60 s limit)
+              before every connect and test, e.g. to start a proxy or copy the database file. A
+              failure stops the connect with its output. It gets{" "}
+              <span className="font-mono">$TABLER_CONNECTION</span>,{" "}
+              <span className="font-mono">$TABLER_HOST</span>,{" "}
+              <span className="font-mono">$TABLER_PORT</span>,{" "}
+              <span className="font-mono">$TABLER_DATABASE</span>,{" "}
+              <span className="font-mono">$TABLER_SQLITE_PATH</span>.
+            </>
+          }
+        >
           <Textarea
             id="bootstrap-script"
+            aria-describedby="bootstrap-script-hint"
             ref={scriptRef}
             defaultValue={script}
             placeholder={SCRIPT_EXAMPLE[dialect ?? "postgres"]}
             rows={4}
             spellCheck={false}
             autoComplete="off"
-            className="min-h-0 resize-none font-mono text-xs"
+            className="min-h-0 resize-none rounded-md font-mono text-xs md:text-xs"
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "Enter")) {
                 e.preventDefault();
@@ -141,23 +156,14 @@ export function BootstrapCommandsDialog({
               }
             }}
           />
-          <p className="text-muted-foreground text-[11px]">
-            Runs in your login shell (<span className="font-mono">$SHELL -lc</span>, 60 s limit)
-            before every connect and test, e.g. to start a proxy or copy the database file. A
-            failure stops the connect with its output. It gets{" "}
-            <span className="font-mono">$TABLER_CONNECTION</span>,{" "}
-            <span className="font-mono">$TABLER_HOST</span>,{" "}
-            <span className="font-mono">$TABLER_PORT</span>,{" "}
-            <span className="font-mono">$TABLER_DATABASE</span>,{" "}
-            <span className="font-mono">$TABLER_SQLITE_PATH</span>.
-          </p>
-        </div>
+        </FormField>
         <DialogFooter>
-          <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+          <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button type="button" size="sm" onClick={save}>
             Save
+            <KbdHint combo="Mod+Enter" />
           </Button>
         </DialogFooter>
       </DialogContent>

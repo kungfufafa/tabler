@@ -47,10 +47,10 @@ function Fingerprint({
     <div
       className={cn(
         "rounded-md border px-3 py-2",
-        tone === "danger" ? "border-error/40 bg-error/5" : "border-border bg-surface-2",
+        tone === "danger" ? "border-error/40 bg-error/10" : "border-border bg-surface-2",
       )}
     >
-      <div className="text-muted-foreground text-[11px]">
+      <div className="text-muted-foreground text-xs">
         {keyTypeLabel(request.keyType)} key fingerprint
         {tone === "danger" ? " offered by the server" : ""}
       </div>
@@ -88,13 +88,13 @@ function UnknownKey({
   return (
     <>
       <AlertDialogHeader>
-        <AlertDialogTitle className="flex items-center gap-2">
-          <ShieldQuestion className="text-warning size-4 shrink-0" />
+        <AlertDialogTitle className="flex items-center gap-2 text-sm">
+          <ShieldQuestion aria-hidden className="text-warning size-4 shrink-0" />
           Unknown SSH host
         </AlertDialogTitle>
         <AlertDialogDescription className="text-xs">
           The authenticity of host{" "}
-          <span className="text-foreground font-mono">{hostPort(request)}</span> can't be
+          <span className="text-foreground font-mono">{hostPort(request)}</span> cannot be
           established
           {request.label ? (
             <>
@@ -106,14 +106,14 @@ function UnknownKey({
         </AlertDialogDescription>
       </AlertDialogHeader>
       <Fingerprint request={request} tone="neutral" />
-      <label className="flex w-fit cursor-default items-center gap-2 text-xs">
+      <label className="flex h-7 w-fit cursor-default items-center gap-2 text-xs">
         <Checkbox checked={persist} onCheckedChange={(v) => setPersist(v === true)} />
         Also add to <span className="font-mono">~/.ssh/known_hosts</span>
       </label>
-      <AlertDialogFooter className="py-3">
+      <AlertDialogFooter>
         <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
         <AlertDialogAction size="sm" onClick={() => onAnswer(request.id, { persist })}>
-          Trust &amp; {verb}
+          Trust and {verb}
         </AlertDialogAction>
       </AlertDialogFooter>
     </>
@@ -124,8 +124,8 @@ function ChangedKey({ request }: { request: HostKeyPromptRequest }) {
   return (
     <>
       <AlertDialogHeader>
-        <AlertDialogTitle className="text-error flex items-center gap-2">
-          <ShieldAlert className="size-4 shrink-0" />
+        <AlertDialogTitle className="flex items-center gap-2 text-sm">
+          <ShieldAlert aria-hidden className="text-error size-4 shrink-0" />
           SSH host key has changed
         </AlertDialogTitle>
         <AlertDialogDescription className="text-xs">
@@ -148,11 +148,11 @@ function ChangedKey({ request }: { request: HostKeyPromptRequest }) {
           administrator, remove the old entry and connect again:
         </p>
         {/* Long bastion names wrap instead of widening the dialog. */}
-        <code className="bg-surface-2 border-border text-foreground rounded-md border px-2 py-1 font-mono text-[11px] leading-4 wrap-anywhere whitespace-pre-wrap select-text">
+        <code className="bg-surface-2 border-border text-foreground rounded-md border px-2 py-1 font-mono text-xs leading-4 wrap-anywhere whitespace-pre-wrap select-text">
           ssh-keygen -R {knownHostsName(request)}
         </code>
       </div>
-      <AlertDialogFooter className="py-3">
+      <AlertDialogFooter>
         <AlertDialogCancel size="sm">Close</AlertDialogCancel>
       </AlertDialogFooter>
     </>
@@ -184,7 +184,7 @@ export function HostKeyPrompt({
       <AlertDialogContent
         className={cn(
           // One track that never grows past the dialog's width, whatever its content.
-          "grid-cols-1 gap-3 data-[size=default]:sm:max-w-md",
+          "grid-cols-1 data-[size=default]:sm:max-w-md",
           shown?.changed && "ring-error/40",
         )}
       >

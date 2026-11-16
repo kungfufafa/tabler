@@ -130,7 +130,7 @@ async function pick(trigger: HTMLElement, item: RegExp | string) {
  * statements are listed.
  */
 async function structureSection() {
-  const sheet = await screen.findByRole("dialog", { name: "Preview changes" });
+  const sheet = await screen.findByRole("dialog", { name: "Preview Changes" });
   const section = await within(sheet).findByRole("region", { name: /^Structure / });
   await waitFor(() => expect(section).toHaveTextContent(/[A-Z]{3,}/));
   return { sheet, section };
@@ -187,7 +187,7 @@ describe("structure header", () => {
     await waitFor(() => expect(guard.guardExecution).toHaveBeenCalled());
     expect(toast.success).not.toHaveBeenCalled();
     expect(ops()).toHaveLength(1);
-    expect(screen.getByText("Preview changes")).toBeInTheDocument();
+    expect(screen.getByText("Preview Changes")).toBeInTheDocument();
   });
 
   it("MySQL: table options stage one ALTER TABLE", async () => {
@@ -290,7 +290,7 @@ describe("columns grid", () => {
     await pick(screen.getByRole("button", { name: "nickname default presets" }), /^Constant/);
     const input = await screen.findByLabelText("Constant default of nickname");
     fireEvent.change(input, { target: { value: "it's me" } });
-    fireEvent.click(screen.getByRole("button", { name: "Set default" }));
+    fireEvent.click(screen.getByRole("button", { name: "Set Default" }));
     expect(ops()).toEqual([
       { op: "alterColumnDefault", table: USERS, name: "nickname", defaultExpr: "'it''s me'" },
     ]);
@@ -514,13 +514,13 @@ describe("triggers", () => {
     fireEvent.click(screen.getByRole("button", { name: "Triggers" }));
     const region = screen.getByRole("region", { name: "Triggers" });
     fireEvent.click(within(region).getByRole("button", { name: "Trigger" }));
-    const dialog = await screen.findByRole("dialog", { name: "New trigger" });
+    const dialog = await screen.findByRole("dialog", { name: "New Trigger" });
     const host = within(dialog).getByTestId("structure-sql-editor");
     const view = EditorView.findFromDOM(host.querySelector(".cm-editor") as HTMLElement)!;
     expect(view.state.doc.toString()).toMatch(
       /^CREATE TRIGGER "posts_trigger"\nBEFORE INSERT OR UPDATE ON "public"\."posts"/,
     );
-    fireEvent.click(within(dialog).getByRole("button", { name: /Add trigger/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /Add Trigger/ }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(ops()).toEqual([
       {
@@ -538,7 +538,7 @@ describe("triggers", () => {
     // Edit the existing trigger.
     const row = within(region).getByText("posts_set_updated_at").closest("tr")!;
     fireEvent.doubleClick(row);
-    const edit = await screen.findByRole("dialog", { name: "Edit trigger" });
+    const edit = await screen.findByRole("dialog", { name: "Edit Trigger" });
     const editor = EditorView.findFromDOM(
       within(edit).getByTestId("structure-sql-editor").querySelector(".cm-editor") as HTMLElement,
     )!;
@@ -552,7 +552,7 @@ describe("triggers", () => {
         },
       }),
     );
-    fireEvent.click(within(edit).getByRole("button", { name: /Stage changes/ }));
+    fireEvent.click(within(edit).getByRole("button", { name: /Stage Changes/ }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(ops().slice(1)).toEqual([
       { op: "dropTrigger", table: posts, name: "posts_set_updated_at" },

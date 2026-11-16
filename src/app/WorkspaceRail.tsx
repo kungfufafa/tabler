@@ -94,7 +94,7 @@ function RailItem({
               <span
                 aria-hidden
                 className={cn(
-                  "relative flex size-8 items-center justify-center rounded-lg text-[11px] font-bold tracking-wide transition-shadow",
+                  "relative flex size-8 items-center justify-center rounded-lg text-xs font-semibold transition-shadow",
                   // Room for the tag badge hanging under the square.
                   tagShort && "mb-1",
                   !active && "group-hover/rail:brightness-95 dark:group-hover/rail:brightness-110",
@@ -112,7 +112,7 @@ function RailItem({
                   <span
                     data-slot="rail-tag"
                     style={{ backgroundColor: cssColor(tagColorOf(tag, customTags)) }}
-                    className="ring-sidebar absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-sm px-0.5 text-[7px] leading-[9px] font-bold tracking-normal text-white ring-1"
+                    className="ring-sidebar absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-sm px-0.5 text-[7px] leading-[9px] font-semibold text-white ring-1"
                   >
                     {tagShort}
                   </span>
@@ -149,10 +149,8 @@ function RailItem({
                   aria-hidden
                   data-slot="rail-connection"
                   className={cn(
-                    "w-full truncate px-0.5 text-center leading-tight",
-                    showDatabase && database
-                      ? "text-muted-foreground text-[9px]"
-                      : cn("text-[10px]", active && "font-medium"),
+                    "w-full truncate px-0.5 text-center text-[10px] leading-tight",
+                    showDatabase && database ? "text-muted-foreground" : active && "font-medium",
                   )}
                 >
                   {info.name}
@@ -176,7 +174,6 @@ function RailItem({
       </Tooltip>
       <ContextMenuContent className="min-w-44">
         <ContextMenuCheckboxItem
-          className="py-0.5 text-xs"
           checked={showDatabase}
           onSelect={(e) => {
             e.preventDefault();
@@ -186,7 +183,6 @@ function RailItem({
           Show Database Name
         </ContextMenuCheckboxItem>
         <ContextMenuCheckboxItem
-          className="py-0.5 text-xs"
           checked={showConnection}
           onSelect={(e) => {
             e.preventDefault();
@@ -197,7 +193,6 @@ function RailItem({
         </ContextMenuCheckboxItem>
         <ContextMenuSeparator />
         <ContextMenuItem
-          className="py-0.5 text-xs"
           onSelect={() =>
             void openProfileInNewWindow(
               info.profileId,
@@ -207,9 +202,7 @@ function RailItem({
         >
           Open in New Window
         </ContextMenuItem>
-        <ContextMenuItem className="py-0.5 text-xs" onSelect={() => onDisconnect(connectionId)}>
-          Disconnect
-        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => onDisconnect(connectionId)}>Disconnect</ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -264,7 +257,7 @@ export function WorkspaceRail() {
               if (!launcher) void actions.run("ui.launcher");
             }}
             className={cn(
-              "border-border text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-ring/50 flex size-8 items-center justify-center rounded-lg border border-dashed outline-none focus-visible:ring-2",
+              "border-border text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring/50 flex size-8 items-center justify-center rounded-lg border border-dashed transition-colors outline-none focus-visible:ring-2",
               launcher && "border-brand text-brand bg-brand-soft border-solid",
             )}
           >

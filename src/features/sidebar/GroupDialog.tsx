@@ -1,5 +1,7 @@
-import { ChevronDown, Minus, Plus } from "lucide-react";
-import { useId, useState, type ComponentProps } from "react";
+import { Minus, Plus } from "lucide-react";
+import { useId, useState } from "react";
+import { FormError } from "@/components/FormError";
+import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -11,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/features/admin/parts";
 import { cn } from "@/lib/utils";
 import {
   closeGroupDialog,
@@ -25,23 +28,6 @@ import {
   type GroupRule,
   type NameOp,
 } from "./groups";
-
-function NativeSelect({ className, children, ...props }: ComponentProps<"select">) {
-  return (
-    <div className="relative min-w-0">
-      <select
-        {...props}
-        className={cn(
-          "border-input dark:bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 h-7 w-full min-w-0 appearance-none truncate rounded-md border bg-transparent pr-6 pl-2 text-xs outline-none focus-visible:ring-[3px]",
-          className,
-        )}
-      >
-        {children}
-      </select>
-      <ChevronDown className="text-muted-foreground pointer-events-none absolute top-1/2 right-1.5 size-3.5 -translate-y-1/2" />
-    </div>
-  );
-}
 
 type Field = GroupRule["field"];
 
@@ -119,26 +105,25 @@ function GroupForm({ request }: { request: GroupDialogRequest }) {
         save();
       }}
     >
-      <label htmlFor={`${id}-name`} className="flex flex-col gap-1 text-xs">
-        Name
+      <FormField label="Name" htmlFor={`${id}-name`}>
         <Input
           id={`${id}-name`}
           autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Partitions"
-          className="h-7 text-xs md:text-xs"
+          className="h-7 rounded-md text-xs md:text-xs"
           spellCheck={false}
           autoComplete="off"
         />
-      </label>
-      <label className="flex items-center gap-2 text-xs">
+      </FormField>
+      <label className="flex h-7 items-center gap-2 text-xs">
         <Checkbox checked={useRules} onCheckedChange={(v) => setUseRules(v === true)} />
         Use filter rules
       </label>
       {useRules ? (
         <div className="flex flex-col gap-1.5" role="group" aria-label="Filter rules">
-          <p className="text-muted-foreground text-[11px]">
+          <p className="text-muted-foreground text-xs leading-4">
             Items matching all of these rules are listed in the group.
           </p>
           {rules.map((r, i) => (
@@ -187,8 +172,9 @@ function GroupForm({ request }: { request: GroupDialogRequest }) {
                   placeholder={
                     r.field === "schema" ? "public" : r.op === "regex" ? "^log_\\d+$" : ""
                   }
+                  aria-invalid={ruleError(r) !== null && r.value !== "" ? true : undefined}
                   className={cn(
-                    "h-7 font-mono text-xs md:text-xs",
+                    "h-7 rounded-md font-mono text-xs md:text-xs",
                     ruleError(r) !== null && r.value !== "" && "border-error",
                   )}
                   spellCheck={false}
@@ -199,8 +185,7 @@ function GroupForm({ request }: { request: GroupDialogRequest }) {
                 <Button
                   type="button"
                   variant="ghost"
-                  size="icon"
-                  className="size-6"
+                  size="icon-xs"
                   aria-label={`Remove rule ${i + 1}`}
                   disabled={rules.length === 1}
                   onClick={() => setRules((list) => list.filter((_, j) => j !== i))}
@@ -210,8 +195,7 @@ function GroupForm({ request }: { request: GroupDialogRequest }) {
                 <Button
                   type="button"
                   variant="ghost"
-                  size="icon"
-                  className="size-6"
+                  size="icon-xs"
                   aria-label={`Add a rule after rule ${i + 1}`}
                   onClick={() =>
                     setRules((list) => [...list.slice(0, i + 1), NEW_RULE, ...list.slice(i + 1)])
@@ -224,17 +208,13 @@ function GroupForm({ request }: { request: GroupDialogRequest }) {
           ))}
         </div>
       ) : (
-        <p className="text-muted-foreground text-[11px]">
+        <p className="text-muted-foreground text-xs leading-4">
           Drag tables, views or functions onto the group (or use Add to Group in their menu).
         </p>
       )}
-      {!valid && name !== "" && (
-        <p role="alert" className="text-error text-[11px]">
-          {errors[0]}
-        </p>
-      )}
+      {!valid && name !== "" && <FormError>{errors[0]}</FormError>}
       <DialogFooter>
-        <Button type="button" variant="ghost" size="sm" onClick={closeGroupDialog}>
+        <Button type="button" variant="outline" size="sm" onClick={closeGroupDialog}>
           Cancel
         </Button>
         <Button type="submit" size="sm" disabled={!valid}>
@@ -251,7 +231,7 @@ export function GroupDialogHost() {
   if (!request) return null;
   return (
     <Dialog open onOpenChange={(o) => !o && closeGroupDialog()}>
-      <DialogContent className="flex flex-col gap-3 sm:max-w-xl">
+      <DialogContent className="sm:max-w-[34rem]">
         <DialogHeader>
           <DialogTitle className="text-sm">
             {request.group ? "Edit Group" : "New Group"}
