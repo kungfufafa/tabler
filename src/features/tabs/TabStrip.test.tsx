@@ -440,6 +440,20 @@ describe("TabStrip", () => {
       );
     });
 
+    it("asks before Delete closes a tab with unsaved work, and a Cancel does not move the focus later", () => {
+      const { a, b } = three();
+      stage(b, 1);
+      tabEl(/posts/).focus();
+      fireEvent.keyDown(tabEl(/posts/), { key: "Delete" });
+      const dialog = screen.getByRole("alertdialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(ids()).toHaveLength(3);
+      // A later, unrelated tab change with the focus elsewhere leaves the focus alone.
+      (document.activeElement as HTMLElement | null)?.blur();
+      act(() => useTabsStore.getState().activate(a));
+      expect(document.activeElement).toBe(document.body);
+    });
+
     it("renames the focused tab with F2 and gives the focus back after Enter", () => {
       three();
       tabEl(/posts/).focus();

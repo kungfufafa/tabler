@@ -124,7 +124,7 @@ function TabList({ group, workspace }: { group: TabGroup; workspace: string | nu
   useEffect(() => {
     if (!refocus.current) return;
     refocus.current = false;
-    // Only when the closed tab took the focus with it (not after Cancel in the unsaved-work dialog).
+    // Only when the closed tab took the focus with it.
     const lost = !document.activeElement || document.activeElement === document.body;
     if (lost && shownId) tabElement(listRef.current, shownId)?.focus();
   }, [shownId, tabs]);
@@ -157,8 +157,11 @@ function TabList({ group, workspace }: { group: TabGroup; workspace: string | nu
         break;
       case "Delete":
         e.preventDefault();
-        refocus.current = true;
         close(tab.id);
+        // Only a close that went through at once moves the focus (React renders after this
+        // handler). One waiting in the unsaved-work dialog leaves the focus to the dialog: an
+        // armed flag would otherwise pull the focus to the strip at some later, unrelated change.
+        refocus.current = !useTabsStore.getState().tabs.some((t) => t.id === tab.id);
         return;
       case "F2":
         e.preventDefault();
