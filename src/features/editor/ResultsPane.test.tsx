@@ -173,6 +173,18 @@ describe("results pane", { timeout: 20_000 }, () => {
     expect(screen.getByRole("tab", { name: "Result 1" })).toHaveAttribute("aria-selected", "true");
   });
 
+  it("closes the Plan tab with Delete while it has focus", async () => {
+    const { id, run } = setup();
+    await run("select id from users limit 2");
+    await act(() => actions.run("query.explain"));
+    const tab = await screen.findByRole("tab", { name: "Plan" });
+    fireEvent.keyDown(tab, { key: "ArrowDown" });
+    expect(getQueryTab(id).plan).not.toBeNull();
+    fireEvent.keyDown(tab, { key: "Delete" });
+    expect(getQueryTab(id).plan).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Plan" })).not.toBeInTheDocument();
+  });
+
   it("edits a result from one table and commits it with ⌘S", async () => {
     const { id, run } = setup();
     await run("select id, email from users limit 5");
