@@ -387,6 +387,27 @@ export function planDeleteGroup(
   );
 }
 
+/**
+ * Undoing `plan` (made from `records` and `before`): the saved groups exactly as they were, and
+ * every profile it moved back into the group it had (as stored, not made canonical).
+ */
+export function planRestore(
+  records: readonly GroupRecord[],
+  before: readonly ConnectionProfile[],
+  plan: GroupPlan,
+): GroupPlan {
+  const was = new Map(before.map((p) => [p.id, p.group]));
+  const back = new Map<string | null, string[]>();
+  for (const id of plan.moves.flatMap((m) => m.ids)) {
+    const group = was.get(id);
+    if (group !== undefined) back.set(group, [...(back.get(group) ?? []), id]);
+  }
+  return {
+    groups: records.map((r) => ({ ...r })),
+    moves: [...back].map(([group, ids]) => ({ ids, group })),
+  };
+}
+
 /** The saved groups with `icon` on `path` (saving the group if it was only used). */
 export function withIcon(
   records: readonly GroupRecord[],
@@ -483,8 +504,11 @@ export interface GroupActions {
   rename: (from: string, to: string) => Promise<boolean>;
   /** Moves the group into `newParent` ("" = top level). */
   move: (path: string, newParent: string) => Promise<boolean>;
-  /** Deletes the group; its connections and subgroups move up one level. */
-  remove: (path: string) => Promise<boolean>;
+  /**
+   * Deletes the group; its connections and subgroups move up one level. Resolves with a function
+   * that undoes it (the launcher's Undo toast), or null when it failed.
+   */
+  remove: (path: string) => Promise<(() => Promise<boolean>) | null>;
   setIcon: (path: string, icon: GroupIconId | null) => Promise<boolean>;
   /** Sets (or, with null, removes) the group's own image. */
   setImage: (path: string, image: string | null) => Promise<boolean>;
@@ -528,12 +552,24 @@ export function useGroupActions(): GroupActions {
         }),
       rename,
       move: (path, newParent) => rename(path, childPath(newParent, leafName(path))),
-      remove: (path) =>
-        attempt("Could not delete the group", async () => {
+      remove: async (path) => {
+        const done: { undo?: GroupPlan } = {};
+        const ok = await attempt("Could not delete the group", async () => {
           const p = normalizePath(path);
           const before = profiles();
-          await applyGroupPlan(qc, planDeleteGroup(await storedGroups(qc), before, p), before);
-        }),
+          const records = await storedGroups(qc);
+          const plan = planDeleteGroup(records, before, p);
+          await applyGroupPlan(qc, plan, before);
+          done.undo = planRestore(records, before, plan);
+        });
+        const undo = done.undo;
+        if (!ok || !undo) return null;
+        return () =>
+          attempt("Could not restore the group", async () => {
+            const now = profiles();
+            await applyGroupPlan(qc, undo, now);
+          });
+      },
       setIcon: (path, icon) =>
         attempt("Could not change the icon", async () => {
           await persistGroups(qc, withIcon(await storedGroups(qc), path, icon));

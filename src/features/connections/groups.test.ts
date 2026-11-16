@@ -26,6 +26,7 @@ import {
   parentPath,
   pathDepth,
   planDeleteGroup,
+  planRestore,
   planRenameGroup,
   rebasePath,
   sanitizeGroups,
@@ -270,6 +271,20 @@ describe("group operations", () => {
     expect(planDeleteGroup([rec("Local")], PROFILES, "Local")).toEqual({
       groups: [],
       moves: [{ ids: ["local"], group: null }],
+    });
+  });
+
+  it("undoing a delete puts the saved groups and the moved connections back as they were", () => {
+    const records = [rec("Clients"), rec("Clients / Acme", "building", PNG), rec("Local")];
+    const plan = planDeleteGroup(records, PROFILES, "Clients / Acme");
+    expect(planRestore(records, PROFILES, plan)).toEqual({
+      groups: records,
+      // The group exactly as it was stored (not made canonical), untouched connections left out.
+      moves: [
+        { ids: ["acme-prod"], group: "Clients / Acme / Prod" },
+        { ids: ["acme-stg"], group: "Clients/ Acme /Staging" },
+        { ids: ["acme"], group: "Clients / Acme" },
+      ],
     });
   });
 

@@ -191,6 +191,71 @@ export function visibleProfiles(
   return [...tree.ungrouped, ...tree.groups.flatMap(walk)];
 }
 
+/** One line of the welcome list as drawn (outside a search): a group header or a connection. */
+export type OutlineItem =
+  { kind: "group"; path: string } | { kind: "row"; profile: ConnectionProfile };
+
+/** The headers and rows on screen, in list order (a collapsed group shows only its header). */
+export function outlineItems(tree: ConnectionTree, collapsed: readonly string[]): OutlineItem[] {
+  const row = (profile: ConnectionProfile): OutlineItem => ({ kind: "row", profile });
+  const walk = (n: GroupNode): OutlineItem[] => [
+    { kind: "group", path: n.path },
+    ...(collapsed.includes(n.path) ? [] : [...n.profiles.map(row), ...n.children.flatMap(walk)]),
+  ];
+  return [...tree.ungrouped.map(row), ...tree.groups.flatMap(walk)];
+}
+
+const rowIndex = (items: readonly OutlineItem[], profileId: string) =>
+  items.findIndex((it) => it.kind === "row" && it.profile.id === profileId);
+
+/**
+ * ← on a connection: the group it closes (the row's own group), and the row selected then, so the
+ * keyboard keeps its place: the nearest one still shown above it, else below (null when none is
+ * left). Null when the row has no group (nothing to close).
+ */
+export function collapseStep(
+  tree: ConnectionTree,
+  collapsed: readonly string[],
+  profileId: string,
+): { group: string; select: string | null } | null {
+  const items = outlineItems(tree, collapsed);
+  const i = rowIndex(items, profileId);
+  const it = items[i];
+  if (it?.kind !== "row") return null;
+  const group = groupPathOf(it.profile);
+  if (!group) return null;
+  const shown = new Set(visibleProfiles(tree, [...collapsed, group]).map((p) => p.id));
+  const pick = (list: readonly OutlineItem[]) =>
+    list.find((x) => x.kind === "row" && shown.has(x.profile.id));
+  const next = pick(items.slice(0, i).reverse()) ?? pick(items.slice(i + 1));
+  return { group, select: next?.kind === "row" ? next.profile.id : null };
+}
+
+/**
+ * → on a connection: the closed group whose header is next to it (right below it, else right above
+ * it, with no other connection in between), so ← then → gets back to where it was. With no row
+ * (everything closed), the first closed group. Null when there is nothing to open.
+ */
+export function expandStep(
+  tree: ConnectionTree,
+  collapsed: readonly string[],
+  profileId: string | null,
+): string | null {
+  const items = outlineItems(tree, collapsed);
+  const closed = (x: OutlineItem | undefined) =>
+    x?.kind === "group" && collapsed.includes(x.path) ? x.path : null;
+  if (profileId === null) return items.map(closed).find((g) => g !== null) ?? null;
+  const i = rowIndex(items, profileId);
+  if (i < 0) return null;
+  for (const step of [1, -1]) {
+    for (let j = i + step; items[j]?.kind === "group"; j += step) {
+      const g = closed(items[j]);
+      if (g) return g;
+    }
+  }
+  return null;
+}
+
 /**
  * The matches of a search, flat, in list order (shown with their group path as a breadcrumb).
  */

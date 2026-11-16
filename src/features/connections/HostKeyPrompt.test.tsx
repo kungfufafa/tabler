@@ -150,9 +150,12 @@ describe("SSH host-key prompt", () => {
     host.unmount();
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(hostKeyDeclined(result.current.error)).toBe(false);
-    expect(toast.error).toHaveBeenCalledWith("Could not connect to Staging via SSH", {
-      description: "unknown host key for bastion.example.com:22",
-    });
+    expect(toast.error).toHaveBeenCalledWith(
+      "Could not connect to Staging via SSH",
+      expect.objectContaining({
+        description: "unknown host key for bastion.example.com:22",
+      }),
+    );
     expect(useHostKeyPromptStore.getState().queue).toHaveLength(0);
     // Nothing stale pops up when a host mounts again.
     render(<HostKeyPromptHost />);
@@ -197,9 +200,12 @@ describe("SSH host-key prompt", () => {
     const result = renderConnect({ withHost: false });
     act(() => result.current.mutate("p-staging-ssh"));
     await waitFor(() => expect(result.current.isError).toBe(true));
-    expect(toast.error).toHaveBeenCalledWith("Could not connect to Staging via SSH", {
-      description: "unknown host key for bastion.example.com:22",
-    });
+    expect(toast.error).toHaveBeenCalledWith(
+      "Could not connect to Staging via SSH",
+      expect.objectContaining({
+        description: "unknown host key for bastion.example.com:22",
+      }),
+    );
   });
 });
 

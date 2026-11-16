@@ -69,7 +69,7 @@ import { usePaletteStore } from "@/features/palette/store";
 import { copyConnectionUrl } from "@/features/safety/copyUrl";
 import { openProfileInNewWindow } from "@/features/tabs/windowHandoff";
 import { ipc, type ConnectionProfile } from "@/lib/ipc";
-import { comboFromEvent } from "@/lib/keys/combo";
+import { comboFromEvent, isMac } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import { cn } from "@/lib/utils";
 import { buildLabel } from "@/stores/appInfo";
@@ -96,10 +96,12 @@ import {
 import { openExportConnections, openGroupDialog, startImportConnections } from "./ioStore";
 import {
   buildConnectionTree,
+  collapseStep,
   CONNECTION_SORT_LABEL,
   CONNECTION_SORTS,
   connectionRowId,
   draggedGroup,
+  expandStep,
   groupDragId,
   groupDropId,
   groupOfDropTarget,
@@ -255,6 +257,18 @@ const menuIconOf = (icon: GroupIconId | null): LucideIcon =>
 
 const separator: MenuEntry = { kind: "separator" };
 
+/**
+ * The list's own keys, also shown in the row menus. Edit… is ⌘I (Get Info) on macOS and F2 on
+ * Windows / Linux, like editing an item in Finder / File Explorer; neither is a launcher shortcut
+ * in the keymap (⌘I is New Row / Beautify only inside a grid or editor).
+ */
+const ROW_KEYS = {
+  connect: "Enter",
+  edit: isMac ? "Mod+I" : "F2",
+  copyUrl: "Mod+C",
+  delete: isMac ? "Backspace" : "Delete",
+} as const;
+
 const fileNameOf = (s: string) => s.replace(/[/\\:*?"<>|]+/g, "-").trim() || "Connections";
 
 /**
@@ -268,7 +282,8 @@ const fileNameOf = (s: string) => s.replace(/[/\\:*?"<>|]+/g, "-").trim() || "Co
  * Left: app name, version and connection setup actions, with Backup… / Restore… at the bottom.
  * Right: the saved connections, the ungrouped ones first without a header, then the group tree
  * (nested, collapsible headers; empty groups too); click selects, Connect / double-click / ↩ opens,
- * ↑/↓ move, ⌫ deletes, ⌘F searches (matches listed flat, with their group path). New Connection
+ * ↑/↓ move, ←/→ close and open groups, ⌘I (F2 on Windows) edits, ⌘C copies as URL, ⌫ deletes,
+ * ⌘F searches (matches listed flat, with their group path). New Connection
  * has no key (⌘N is New Window, ⇧⌘O New SQL Viewer): it is "Create a new connection…" here, the
  * context menu's New ▸ Connection… and File ▸ New Connection….
  * Rows can be dragged onto a group header, headers onto another header (nesting) or the
@@ -411,6 +426,26 @@ export function Launcher() {
     const t = e.target as HTMLElement;
     if (t !== e.currentTarget && t.getAttribute("role") !== "option") return;
     if (navigate(e, true)) return;
+    // By combo, before the modifier check below: on Windows / Linux ⌘ is Ctrl.
+    const combo = comboFromEvent(e.nativeEvent);
+    if (combo === ROW_KEYS.copyUrl && selected) {
+      // ⌘C on a connection: Copy as URL, password included (TablePlus).
+      e.preventDefault();
+      void copyConnectionUrl(selected, true);
+      return;
+    }
+    if (combo === ROW_KEYS.edit && selected) {
+      e.preventDefault();
+      openConnectionDialog(selected);
+      return;
+    }
+    const plain = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
+    if (plain && (e.key === "ArrowLeft" || e.key === "ArrowRight") && !searching) {
+      e.preventDefault();
+      if (e.key === "ArrowLeft") collapseCurrent();
+      else expandNext();
+      return;
+    }
     if (e.altKey || e.ctrlKey) return;
     if (e.key === "Home" || e.key === "End") {
       e.preventDefault();
@@ -419,11 +454,23 @@ export function Launcher() {
     } else if ((e.key === "Backspace" || e.key === "Delete") && selected) {
       e.preventDefault();
       setPendingDelete(selected);
-    } else if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === "c" && selected) {
-      // ⌘C on a connection: Copy as URL, password included (TablePlus).
-      e.preventDefault();
-      void copyConnectionUrl(selected, true);
     }
+  };
+
+  /** ←: closes the current row's group; the selection moves to the nearest row left on screen. */
+  const collapseCurrent = () => {
+    if (!current) return;
+    const step = collapseStep(tree, collapsed, current.id);
+    if (!step) return;
+    toggleGroup(step.group);
+    const next = step.select ? all.find((p) => p.id === step.select) : undefined;
+    if (next) select(next);
+    else setSelectedId(null);
+  };
+  /** →: opens the closed group next to the current row (← then → gets back to where it was). */
+  const expandNext = () => {
+    const group = expandStep(tree, collapsed, current?.id ?? null);
+    if (group) toggleGroup(group);
   };
 
   const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -580,14 +627,26 @@ export function Launcher() {
   };
 
   const rowMenu = (p: ConnectionProfile): MenuEntry[] => [
-    { kind: "item", label: "Connect", icon: Plug, run: () => openProfile(p.id) },
+    {
+      kind: "item",
+      label: "Connect",
+      icon: Plug,
+      shortcut: ROW_KEYS.connect,
+      run: () => openProfile(p.id),
+    },
     {
       kind: "item",
       label: "Open in New Window",
       icon: AppWindow,
       run: () => void openProfileInNewWindow(p.id),
     },
-    { kind: "item", label: "Edit…", icon: Pencil, run: () => openConnectionDialog(p) },
+    {
+      kind: "item",
+      label: "Edit…",
+      icon: Pencil,
+      shortcut: ROW_KEYS.edit,
+      run: () => openConnectionDialog(p),
+    },
     {
       kind: "item",
       label: "Duplicate",
@@ -599,6 +658,7 @@ export function Launcher() {
       kind: "item",
       label: "Copy as URL",
       icon: Link2,
+      shortcut: ROW_KEYS.copyUrl,
       run: () => void copyConnectionUrl(p, true),
     },
     {
@@ -616,6 +676,7 @@ export function Launcher() {
       kind: "item",
       label: "Delete…",
       icon: Trash2,
+      shortcut: ROW_KEYS.delete,
       run: () => setPendingDelete(p),
       destructive: true,
     },
@@ -697,12 +758,30 @@ export function Launcher() {
       label: "Delete Group",
       icon: Trash2,
       destructive: true,
-      run: () =>
-        void groupActions.remove(group).then((ok) => {
-          if (ok) useLauncherPrefs.getState().renameCollapsed(group, null);
-        }),
+      run: () => void deleteGroup(group),
     },
   ];
+
+  /**
+   * Delete Group acts at once, like TablePlus's plain Delete, but it can be undone: the toast's
+   * Undo puts the group, its subgroups and its connections back (and which ones were collapsed).
+   */
+  const deleteGroup = async (group: string) => {
+    const collapsedBefore = useLauncherPrefs.getState().collapsedGroups;
+    const undo = await groupActions.remove(group);
+    if (!undo) return;
+    useLauncherPrefs.getState().renameCollapsed(group, null);
+    toast.message(`Group “${leafName(group)}” deleted`, {
+      description: "Its connections and subgroups moved up one level.",
+      action: {
+        label: "Undo",
+        onClick: () =>
+          void undo().then((ok) => {
+            if (ok) useLauncherPrefs.setState({ collapsedGroups: collapsedBefore });
+          }),
+      },
+    });
+  };
 
   // ---- drag and drop -----------------------------------------------------------------------
 
