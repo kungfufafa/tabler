@@ -123,9 +123,11 @@ async function openObjectSql(
     showWorkspace();
     return null;
   }
-  const busy = `${ctx.connectionId}\u0000${key}`;
-  if (!newTab && opening.has(busy)) return null;
-  opening.add(busy);
+  // Only the reusing open is guarded: Open in New Tab asks for another copy, and must not clear
+  // the guard of a click whose definition is still loading.
+  const busy = newTab ? null : `${ctx.connectionId}\u0000${key}`;
+  if (busy !== null && opening.has(busy)) return null;
+  if (busy !== null) opening.add(busy);
   try {
     const dialect = requireSessionDialect(ctx);
     const id = openSqlInObjectTab(ctx.connectionId, key, await load(), dialect, name);
@@ -135,7 +137,7 @@ async function openObjectSql(
     failed(`Could not open ${name}`, e);
     return null;
   } finally {
-    opening.delete(busy);
+    if (busy !== null) opening.delete(busy);
   }
 }
 

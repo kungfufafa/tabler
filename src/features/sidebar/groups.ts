@@ -381,13 +381,16 @@ export function deleteGroup(scope: string, id: string): void {
 
 /**
  * Undo of Delete Group: puts `group` back at `index` (its place in the list, so the sidebar order
- * comes back too). Nothing happens when a group with its id exists again.
+ * comes back too). Nothing happens when a group with its id exists again. Members put into another
+ * manual group meanwhile stay there: an item lives in one manual group (`addToGroup`).
  */
 export function restoreGroup(scope: string, group: SidebarGroup, index: number): void {
   update(scope, (list) => {
     if (list.some((g) => g.id === group.id)) return list;
+    const taken = new Set(list.flatMap((g) => (g.rules === null ? g.members : [])));
+    const restored = { ...group, members: group.members.filter((m) => !taken.has(m)) };
     const at = Math.max(0, Math.min(index, list.length));
-    return [...list.slice(0, at), group, ...list.slice(at)];
+    return [...list.slice(0, at), restored, ...list.slice(at)];
   });
 }
 

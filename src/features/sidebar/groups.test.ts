@@ -234,6 +234,18 @@ describe("sidebar groups store", () => {
     expect(groupsOf(SCOPE).map((g) => g.id)).toEqual([a.id, b.id, c.id]);
   });
 
+  it("restores a group without members moved to another manual group meanwhile", () => {
+    const a = createGroup(SCOPE, "A", null, ["t:public.users", "t:public.orders"]);
+    const b = createGroup(SCOPE, "B", null);
+    const deleted = groupsOf(SCOPE)[0]!;
+    deleteGroup(SCOPE, a.id);
+    addToGroup(SCOPE, b.id, ["t:public.users"]);
+    restoreGroup(SCOPE, deleted, 0);
+    const [ga, gb] = groupsOf(SCOPE);
+    expect(ga!.members).toEqual(["t:public.orders"]);
+    expect(gb!.members).toEqual(["t:public.users"]);
+  });
+
   it("moves items between manual groups (an item is in one of them)", () => {
     const a = createGroup(SCOPE, "A", null, ["t:public.users"]);
     const b = createGroup(SCOPE, "B", null);

@@ -19,8 +19,9 @@ export const ITEMS_SEARCH_HINT =
 
 /**
  * The sidebar's search field. Esc clears it, and leaves it once it is empty; ↓ hands focus to the
- * list below (`onArrowDown`), Enter acts on it (`onEnter`). Shows its focus shortcut (`kbdHint`) while empty. With `menu`, the magnifier
- * opens the field's menu (TablePlus: Search in Database…, Matching Strategy ▸, Settings ▸).
+ * list below (`onArrowDown`), Enter acts on it (`onEnter`). Shows its focus shortcut (`kbdHint`)
+ * while empty. With `menu`, the magnifier opens the field's menu (TablePlus: Search in Database…,
+ * Matching Strategy ▸, Settings ▸).
  */
 export function SidebarSearch({
   value,
