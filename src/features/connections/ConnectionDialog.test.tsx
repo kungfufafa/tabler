@@ -236,6 +236,29 @@ describe("ConnectionDialog — unsaved changes", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
+  it("Save with typed input shows Saving… and closes without asking", async () => {
+    let finish: (() => void) | undefined;
+    const real = ipc.profiles.save.bind(ipc.profiles);
+    vi.spyOn(ipc.profiles, "save").mockImplementation(
+      (input) =>
+        new Promise((resolve, reject) => {
+          finish = () => void real(input).then(resolve, reject);
+        }),
+    );
+    const user = userEvent.setup();
+    const { onOpenChange } = renderDialog({ profile: SEED_PROFILES[0]! });
+    const form = await screen.findByRole("dialog", { name: "Edit Local Postgres" });
+    await user.type(within(form).getByLabelText("Database"), "x");
+    const saveButton = within(form).getByRole("button", { name: "Save" });
+    await user.click(saveButton);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(saveButton).toHaveTextContent("Saving…");
+    expect(saveButton).toHaveAttribute("aria-busy", "true");
+    act(() => finish!());
+    await vi.waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
   it("the driver picker counts as untouched, and a successful Test clears the unsaved state", async () => {
     const user = userEvent.setup();
     const { onOpenChange } = renderDialog({
