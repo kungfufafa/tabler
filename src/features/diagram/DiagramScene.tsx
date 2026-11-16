@@ -1,6 +1,7 @@
 import { ArrowUpRight, Eye, KeyRound, Layers, Table2, type LucideIcon } from "lucide-react";
 import { memo } from "react";
 import type { DiagramTable, TableKind } from "@/lib/ipc";
+import { isMac } from "@/lib/keys/combo";
 import { crowsFootPath, fitText, oneEndMarks } from "./geometry";
 import { describeRelation, foreignKeyColumns } from "./graph";
 import { CARD, cardSize } from "./layout";
@@ -88,13 +89,15 @@ const TableCard = memo(function TableCard({
         fontSize={12}
         fontWeight={600}
         data-table-name={name}
-        className={handlers ? "cursor-pointer hover:underline" : undefined}
+        className={handlers ? "hover:underline" : undefined}
         style={{ fill: palette.text }}
         onClick={handlers ? (e) => handlers.onNameClick(name, e) : undefined}
         onDoubleClick={handlers ? (e) => handlers.onNameDoubleClick(name, e) : undefined}
       >
         {fitText(name, nameMax)}
-        {handlers && <title>{`${name} — click to open, double-click for its structure`}</title>}
+        {handlers && (
+          <title>{`${name} — double-click to open, ${isMac ? "⌥" : "Alt+"}double-click for its structure`}</title>
+        )}
       </text>
       {table.columns.map((c, i) => {
         const top = CARD.header + i * CARD.row;
