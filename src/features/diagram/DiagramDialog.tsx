@@ -77,8 +77,6 @@ import {
   type View,
 } from "./viewport";
 
-/** A click on a table name waits this long for a second click (structure) before opening. */
-export const NAME_DOUBLE_CLICK_MS = 250;
 /** Pointer travel (px) below which a press is a click, not a drag. */
 const DRAG_THRESHOLD = 3;
 
@@ -361,14 +359,6 @@ export function DiagramDialog({
     });
   };
 
-  const clickTimer = useRef<number | null>(null);
-  useEffect(
-    () => () => {
-      if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
-    },
-    [],
-  );
-
   const handlers = useMemo<SceneHandlers>(
     () => ({
       onCardPointerDown: (name, e) => {
@@ -390,18 +380,13 @@ export function DiagramDialog({
           moved: false,
         });
       },
-      onNameClick: (name: string, e: ReactMouseEvent<SVGTextElement>) => {
+      // A single click on a name only selects its card (the card's own press does that), so the
+      // diagram stays open with its zoom, pan and filter: it is a canvas you work in.
+      onNameClick: () => undefined,
+      // Double-click opens the table's data; with ⌥ (Alt) its structure.
+      onNameDoubleClick: (name: string, e: ReactMouseEvent<SVGTextElement>) => {
         if (suppressClick.current || e.metaKey || e.shiftKey || e.ctrlKey) return;
-        if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
-        clickTimer.current = window.setTimeout(() => {
-          clickTimer.current = null;
-          openTable(name, "table");
-        }, NAME_DOUBLE_CLICK_MS);
-      },
-      onNameDoubleClick: (name: string) => {
-        if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
-        clickTimer.current = null;
-        openTable(name, "structure");
+        openTable(name, e.altKey ? "structure" : "table");
       },
       onRelationHover: setHovered,
     }),
@@ -476,11 +461,26 @@ export function DiagramDialog({
 
   const autoArrange = () => {
     if (!data) return;
+    // One click must not lose an arrangement for good: keep it for the toast's Undo.
+    const before = latest.current.positions;
+    const remembered = storageKey ? loadPositions(storageKey) !== null : false;
+    const viewBefore = latest.current.view;
     if (storageKey) forgetPositions(storageKey);
     const fresh = autoLayout(data.tables, data.relations, data.schema);
     setPositions(fresh);
     const s = latest.current.size;
     if (s.w > 0) setView(fitView(boundsOf(visible, fresh), s));
+    if (!before) return;
+    toast.message("Tables rearranged", {
+      action: {
+        label: "Undo",
+        onClick: () => {
+          setPositions(before);
+          setView(viewBefore);
+          if (storageKey && remembered) savePositions(storageKey, before);
+        },
+      },
+    });
   };
 
   const searchEnter = () => {
@@ -674,7 +674,7 @@ export function DiagramDialog({
             size="sm"
             onClick={autoArrange}
             disabled={!data}
-            title="Arrange every table again (forgets the positions you moved them to)"
+            title="Arrange every table again (Undo in the message brings your positions back)"
           >
             <LayoutTemplate />
             Auto Layout
@@ -807,8 +807,9 @@ export function DiagramDialog({
             Fit
           </Button>
           <p className="text-muted-foreground ml-auto truncate">
-            Click a name to open the table, double-click for its structure · drag cards to move them
-            · drag or scroll to pan, {isMac ? "⌘-scroll" : "Ctrl+scroll"} or pinch to zoom
+            Click a card to select it · double-click a name to open the table,{" "}
+            {isMac ? "⌥-double-click" : "Alt+double-click"} for its structure · drag cards to move
+            them · drag or scroll to pan, {isMac ? "⌘-scroll" : "Ctrl+scroll"} or pinch to zoom
           </p>
         </div>
       </DialogContent>
