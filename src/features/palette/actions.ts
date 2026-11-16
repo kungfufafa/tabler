@@ -34,6 +34,8 @@ export type ActionId =
   | "ui.toggle-inspector"
   | "ui.toggle-console"
   | "ui.launcher"
+  /** Windows (no menu bar): F10 pops the ⋮ app menu (File, Edit, View…) under its button. */
+  | "ui.app-menu"
   | "sidebar.focus-search"
   | "view.refresh"
   /** Table tabs: show the rows (⌃⌘[) or the structure (⌃⌘]) in the same tab. */
