@@ -94,9 +94,12 @@ describe("“Ask every time” connections", () => {
     const prompt = await screen.findByRole("dialog", { name: "Password for Ask me" });
     await user.type(within(prompt).getByLabelText("Password"), "wrong{Enter}");
     await waitFor(() => expect(result.current.isError).toBe(true));
-    expect(toast.error).toHaveBeenCalledWith("Could not connect to Ask me", {
-      description: "authentication failed: wrong password",
-    });
+    expect(toast.error).toHaveBeenCalledWith(
+      "Could not connect to Ask me",
+      expect.objectContaining({
+        description: "authentication failed: wrong password",
+      }),
+    );
   });
 
   it("uses a password handed over by the connection form instead of asking", async () => {

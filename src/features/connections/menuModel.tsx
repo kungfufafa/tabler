@@ -4,6 +4,7 @@ import {
   ContextMenuRadioGroup,
   ContextMenuRadioItem,
   ContextMenuSeparator,
+  ContextMenuShortcut,
   ContextMenuSub,
   ContextMenuSubContent,
   ContextMenuSubTrigger,
@@ -13,10 +14,12 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
+import { formatCombo, isMac } from "@/lib/keys/combo";
 
 /**
  * One menu described once, drawn as a context menu (right-click) or a dropdown ("…" button):
@@ -32,6 +35,11 @@ export type MenuEntry =
       destructive?: boolean;
       /** Nesting level (a group tree drawn in a menu): indents the item. */
       indent?: number;
+      /**
+       * The key that does the same from the list ("Mod+C"), shown at the right like a native
+       * menu's accelerator. It only labels the item: the list handles the key itself.
+       */
+      shortcut?: string;
     }
   | { kind: "sub"; label: string; icon?: LucideIcon; items: MenuEntry[]; disabled?: boolean }
   | {
@@ -52,6 +60,16 @@ function tidy(entries: readonly MenuEntry[]): MenuEntry[] {
   while (out.at(-1)?.kind === "separator") out.pop();
   return out;
 }
+
+/** `aria-keyshortcuts` form of a combo ("Mod+C" → "Control+C", "Meta+C" on macOS). */
+const ariaKeys = (combo: string | undefined) =>
+  combo
+    ?.split("+")
+    .map((p) => (p === "Mod" ? (isMac ? "Meta" : "Control") : p === "Ctrl" ? "Control" : p))
+    .join("+");
+
+/** Spelled-out keys ("Ctrl+Shift+C") read badly with the menus' glyph spacing. */
+const shortcutClass = isMac ? undefined : "tracking-normal";
 
 /** The item's left padding for its nesting level (the menus' items start at 8px). */
 const indentStyle = (indent: number | undefined) =>
@@ -91,8 +109,15 @@ export function ContextMenuEntries({ entries }: { entries: readonly MenuEntry[] 
             disabled={e.disabled}
             onSelect={e.run}
             style={indentStyle(e.indent)}
+            aria-keyshortcuts={ariaKeys(e.shortcut)}
           >
             {e.icon && <e.icon />} {e.label}
+            {/* Announced through aria-keyshortcuts; hidden so the item's name stays its label. */}
+            {e.shortcut && (
+              <ContextMenuShortcut aria-hidden className={shortcutClass}>
+                {formatCombo(e.shortcut)}
+              </ContextMenuShortcut>
+            )}
           </ContextMenuItem>
         );
     }
@@ -133,8 +158,15 @@ export function DropdownMenuEntries({ entries }: { entries: readonly MenuEntry[]
             disabled={e.disabled}
             onSelect={e.run}
             style={indentStyle(e.indent)}
+            aria-keyshortcuts={ariaKeys(e.shortcut)}
           >
             {e.icon && <e.icon />} {e.label}
+            {/* Announced through aria-keyshortcuts; hidden so the item's name stays its label. */}
+            {e.shortcut && (
+              <DropdownMenuShortcut aria-hidden className={shortcutClass}>
+                {formatCombo(e.shortcut)}
+              </DropdownMenuShortcut>
+            )}
           </DropdownMenuItem>
         );
     }

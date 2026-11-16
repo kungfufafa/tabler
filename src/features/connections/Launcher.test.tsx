@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -324,6 +324,23 @@ describe("Launcher", () => {
       expect(useConnectionsStore.getState().order).toEqual([]);
     });
 
+    it("a failed connect says why and offers Edit… to fix the connection", async () => {
+      vi.spyOn(ipc.connections, "connect").mockRejectedValue(
+        Object.assign(new Error("password authentication failed"), { code: "CONNECT_FAILED" }),
+      );
+      renderLauncher();
+      fireEvent.doubleClick(await row("Shop MySQL"));
+      await vi.waitFor(() => expect(toast.error).toHaveBeenCalled());
+      const [title, opts] = vi.mocked(toast.error).mock.calls.at(-1)!;
+      expect(title).toBe("Could not connect to Shop MySQL");
+      expect(opts).toMatchObject({ description: "password authentication failed" });
+      const action = (opts as { action: { label: string; onClick: () => void } }).action;
+      expect(action.label).toBe("Edit…");
+      act(() => action.onClick());
+      expect(useConnectionDialog.getState()).toMatchObject({ open: true });
+      expect(useConnectionDialog.getState().profile?.id).toBe("p-shop-mysql");
+    });
+
     it("collapses a group from its header (remembered), and searching shows every match", async () => {
       const user = userEvent.setup();
       renderLauncher();
@@ -360,6 +377,43 @@ describe("Launcher", () => {
       await user.keyboard("{Home}{ArrowDown}{Enter}");
       expect(connect).toHaveBeenCalledWith("p-local-pg");
       await vi.waitFor(() => expect(useUiStore.getState().view).toBe("workspace"));
+    });
+
+    it("←/→ close and open the selected row's group, keeping the selection close by", async () => {
+      const user = userEvent.setup();
+      renderLauncher();
+      fireEvent.click(await row("Rotated host"));
+      list().focus();
+      await user.keyboard("{ArrowLeft}");
+      expect(useLauncherPrefs.getState().collapsedGroups).toEqual(["Staging"]);
+      expect(screen.queryByText("Rotated host")).toBeNull();
+      expect(selectedId()).toBe("p-prod-pg");
+      await user.keyboard("{ArrowRight}");
+      expect(useLauncherPrefs.getState().collapsedGroups).toEqual([]);
+      expect(await row("Rotated host")).toBeInTheDocument();
+      expect(selectedId()).toBe("p-prod-pg");
+      // An ungrouped connection has no group to close.
+      await user.keyboard("{Home}{ArrowLeft}");
+      expect(useLauncherPrefs.getState().collapsedGroups).toEqual([]);
+      expect(selectedId()).toBe("p-sample-sqlite");
+    });
+
+    it("⌘C (Ctrl+C on Windows) copies the selected connection as a URL", async () => {
+      renderLauncher();
+      fireEvent.click(await row("Shop MySQL"));
+      fireEvent.keyDown(list(), mod("C"));
+      await vi.waitFor(() =>
+        expect(toast.success).toHaveBeenCalledWith("Copied", expect.anything()),
+      );
+      expect(await navigator.clipboard.readText()).toMatch(/^mysql:/);
+    });
+
+    it("⌘I (F2 on Windows) edits the selected connection", async () => {
+      renderLauncher();
+      fireEvent.click(await row("Shop MySQL"));
+      fireEvent.keyDown(list(), isMac ? mod("I") : { key: "F2", code: "F2" });
+      expect(useConnectionDialog.getState()).toMatchObject({ open: true });
+      expect(useConnectionDialog.getState().profile?.id).toBe("p-shop-mysql");
     });
 
     it("⌫ asks before deleting the selected connection", async () => {
@@ -467,11 +521,15 @@ describe("Launcher", () => {
       (await actionsButton("Local Postgres")).focus();
       await user.keyboard("{Enter}");
       const menu = await screen.findByRole("menu");
-      expect(
-        within(menu)
-          .getAllByRole("menuitem")
-          .map((i) => i.textContent?.trim()),
-      ).toEqual([
+      const items = within(menu).getAllByRole("menuitem");
+      // The label without the key drawn at its right.
+      const label = (i: HTMLElement) =>
+        [...i.childNodes]
+          .filter((n) => !(n instanceof HTMLElement && n.dataset.slot?.endsWith("-shortcut")))
+          .map((n) => n.textContent)
+          .join("")
+          .trim();
+      expect(items.map(label)).toEqual([
         "Connect",
         "Open in New Window",
         "Edit…",
@@ -483,6 +541,19 @@ describe("Launcher", () => {
         "Import Connections…",
         "Delete…",
       ]);
+      // Like a native menu, the items the list has a key for show it.
+      const keys = Object.fromEntries(
+        items.flatMap((i) => {
+          const k = i.getAttribute("aria-keyshortcuts");
+          return k ? [[label(i), k]] : [];
+        }),
+      );
+      expect(keys).toEqual({
+        Connect: "Enter",
+        "Edit…": isMac ? "Meta+I" : "F2",
+        "Copy as URL": isMac ? "Meta+C" : "Control+C",
+        "Delete…": isMac ? "Backspace" : "Delete",
+      });
       expect(usePaletteStore.getState().connecting).toEqual([]);
       expect(connect).not.toHaveBeenCalled();
       expect(useUiStore.getState().view).toBe("launcher");
@@ -787,6 +858,38 @@ describe("Launcher", () => {
           { path: "EU", icon: "cloud" },
           { path: "EU / Old", icon: null },
         ]);
+      });
+
+      it("Delete Group acts at once and its toast's Undo puts everything back", async () => {
+        const user = userEvent.setup();
+        await ipc.settings.set("connectionGroups", [{ path: "Staging / EU", icon: "cloud" }]);
+        await ipc.profiles.moveToGroup(["p-rotated-ssh"], "Staging / EU");
+        useLauncherPrefs.setState({ collapsedGroups: ["Staging / EU"] });
+        renderLauncher();
+        await row("Staging via SSH");
+        fireEvent.contextMenu(header("Staging"));
+        await user.click(await screen.findByRole("menuitem", { name: "Delete Group" }));
+        await within(list()).findByRole("group", { name: "EU" });
+        expect(useLauncherPrefs.getState().collapsedGroups).toEqual(["EU"]);
+        const [title, opts] = vi.mocked(toast.message).mock.calls.at(-1)!;
+        expect(title).toBe("Group “Staging” deleted");
+        expect(opts).toMatchObject({ duration: 8_000 });
+        const action = (opts as { action: { label: string; onClick: () => void } }).action;
+        expect(action.label).toBe("Undo");
+
+        act(() => action.onClick());
+        await within(list()).findByRole("group", { name: "Staging / EU" });
+        await vi.waitFor(() =>
+          expect(
+            within(screen.getByRole("group", { name: "Staging" })).getByText("Staging via SSH"),
+          ).toBeInTheDocument(),
+        );
+        expect((await ipc.settings.get()).connectionGroups).toEqual([
+          { path: "Staging / EU", icon: "cloud" },
+        ]);
+        await vi.waitFor(() =>
+          expect(useLauncherPrefs.getState().collapsedGroups).toEqual(["Staging / EU"]),
+        );
       });
 
       it("shows a group's own image on its header, instead of its icon", async () => {

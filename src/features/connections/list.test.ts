@@ -4,13 +4,16 @@ import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
 import {
   breadcrumbOf,
   buildConnectionTree,
+  collapseStep,
   draggedGroup,
+  expandStep,
   flattenGroups,
   groupDragId,
   groupDropId,
   groupOfDropTarget,
   groupProfiles,
   isGroupCollapsed,
+  outlineItems,
   searchProfiles,
   sortProfiles,
   visibleProfiles,
@@ -92,6 +95,59 @@ describe("the connection tree", () => {
       "Production (1): p-prod-pg",
       "Staging (2): p-staging-ssh,p-rotated-ssh",
     ]);
+  });
+});
+
+describe("opening and closing groups from the keyboard", () => {
+  const seed = buildConnectionTree(SEED_PROFILES);
+  const nested = buildConnectionTree(NESTED);
+  const lines = (tree: typeof seed, collapsed: string[]) =>
+    outlineItems(tree, collapsed).map((x) => (x.kind === "group" ? `[${x.path}]` : x.profile.id));
+
+  it("lists the headers and rows as drawn; a closed group shows only its header", () => {
+    expect(lines(nested, ["Clients / Acme"])).toEqual([
+      "loose",
+      "[Clients]",
+      "[Clients / Acme]",
+      "[Clients / Globex]",
+      "globex",
+      "[Local]",
+      "local",
+    ]);
+  });
+
+  it("← closes the row's own group and selects the nearest row left above it, else below", () => {
+    expect(collapseStep(seed, [], "p-rotated-ssh")).toEqual({
+      group: "Staging",
+      select: "p-prod-pg",
+    });
+    expect(collapseStep(nested, [], "acme-prod")).toEqual({
+      group: "Clients / Acme / Prod",
+      select: "acme",
+    });
+    // Nothing above but the closed group's own rows: the next row below.
+    expect(collapseStep(buildConnectionTree(NESTED.slice(0, 3)), [], "acme")).toEqual({
+      group: "Clients / Acme",
+      select: "globex",
+    });
+    expect(collapseStep(buildConnectionTree([NESTED[1]!]), [], "acme")).toEqual({
+      group: "Clients / Acme",
+      select: null,
+    });
+    // No group: nothing to close.
+    expect(collapseStep(seed, [], "p-sample-sqlite")).toBeNull();
+  });
+
+  it("→ opens the closed group next to the row, so ← then → gets back", () => {
+    expect(expandStep(seed, ["Staging"], "p-prod-pg")).toBe("Staging");
+    expect(expandStep(seed, ["Local"], "p-sample-sqlite")).toBe("Local");
+    // Right above the row (headers only in between).
+    expect(expandStep(seed, ["Local"], "p-prod-pg")).toBe("Local");
+    expect(expandStep(seed, [], "p-prod-pg")).toBeNull();
+    // A connection in between: not next to it.
+    expect(expandStep(seed, ["Staging"], "p-sample-sqlite")).toBeNull();
+    // Nothing on screen: the first closed group.
+    expect(expandStep(buildConnectionTree([NESTED[1]!]), ["Clients"], null)).toBe("Clients");
   });
 });
 

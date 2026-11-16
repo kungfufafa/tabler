@@ -14,6 +14,7 @@ import {
   isPromptCancelled,
   takeHandedOverPassword,
 } from "./passwordPromptStore";
+import { openConnectionDialog } from "./store";
 
 export const profileKeys = {
   all: ["profiles"] as const,
@@ -285,8 +286,17 @@ export function useConnect() {
       // The host-key prompt already told the user why the connection was not opened; a
       // cancelled password prompt or SSH question (2FA code) needs no message.
       if (hostKeyDeclined(e) || isPromptCancelled(e) || toIpcError(e).code === "CANCELLED") return;
-      const name = profileName(qc, profileId);
-      toast.error(`Could not connect${name ? ` to ${name}` : ""}`, { description: e.message });
+      const profile = qc
+        .getQueryData<ConnectionProfile[]>(profileKeys.all)
+        ?.find((p) => p.id === profileId);
+      // Most failures are a wrong host, password or database: Edit… goes straight back to the
+      // form to fix it (TablePlus keeps that form one step away).
+      toast.error(`Could not connect${profile ? ` to ${profile.name}` : ""}`, {
+        description: e.message,
+        action: profile
+          ? { label: "Edit…", onClick: () => openConnectionDialog(profile) }
+          : undefined,
+      });
     },
   });
 }

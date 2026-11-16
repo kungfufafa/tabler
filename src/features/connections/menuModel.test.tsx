@@ -6,6 +6,7 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { formatCombo, isMac } from "@/lib/keys/combo";
 import { DropdownMenuEntries, type MenuEntry } from "./menuModel";
 
 beforeAll(() => {
@@ -58,5 +59,18 @@ describe("menu model", () => {
     expect(item("Prod")).toHaveStyle({ paddingLeft: "36px" });
     item("Prod").click();
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows an item's key at the right, announced without changing its name", () => {
+    const menu = renderMenu([
+      { kind: "item", label: "Copy as URL", run: vi.fn(), shortcut: "Mod+C" },
+      { kind: "item", label: "Duplicate", run: vi.fn() },
+    ]);
+    const copy = within(menu).getByRole("menuitem", { name: "Copy as URL" });
+    expect(copy).toHaveAttribute("aria-keyshortcuts", isMac ? "Meta+C" : "Control+C");
+    expect(copy).toHaveTextContent(formatCombo("Mod+C"));
+    expect(within(menu).getByRole("menuitem", { name: "Duplicate" })).not.toHaveAttribute(
+      "aria-keyshortcuts",
+    );
   });
 });
