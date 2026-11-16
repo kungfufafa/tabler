@@ -13,6 +13,14 @@ import { TabStrip as Strip } from "./TabStrip";
 import { UnsavedChangesDialog } from "./UnsavedChangesDialog";
 import { wheelToScrollLeft } from "./wheel";
 
+const platform = vi.hoisted(() => ({ windows: false }));
+vi.mock("@/lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/platform")>()),
+  get isWindows() {
+    return platform.windows;
+  },
+}));
+
 /** The strip as the shell mounts it: the unsaved-changes dialog lives next to it. */
 function TabStrip() {
   return (
@@ -57,6 +65,7 @@ describe("TabStrip", () => {
     useStructureStore.setState({ byTab: {} });
     useConnectionsStore.setState({ byId: {}, order: [], activeId: "c1" });
     useUiStore.setState({ view: "workspace" });
+    platform.windows = false;
     Element.prototype.scrollIntoView = scrollIntoView;
     scrollIntoView.mockClear();
   });
@@ -303,7 +312,7 @@ describe("TabStrip", () => {
     expect(ids()).toEqual([b]);
   });
 
-  it("keeps the (hover-only) close buttons out of the Tab order", async () => {
+  it("keeps the (hover-only) close buttons out of the Tab order; only the shown tab is a stop", async () => {
     const s = useTabsStore.getState();
     const a = s.openTable("c1", users);
     s.openTable("c1", posts);
@@ -316,9 +325,12 @@ describe("TabStrip", () => {
     );
     const user = userEvent.setup();
     screen.getByRole("button", { name: "Connections" }).focus();
-    // Back (Forward is disabled: nothing to go forward to), then New query, then out.
+    // Back (Forward is disabled: nothing to go forward to), the shown tab, New query, then out.
     await user.tab();
     expect(screen.getByRole("button", { name: "Back" })).toHaveFocus();
+    await user.tab();
+    expect(tabEl(/posts/)).toHaveFocus();
+    expect(tabEl(/users/)).toHaveAttribute("tabindex", "-1");
     await user.tab();
     expect(screen.getByRole("button", { name: "New query" })).toHaveFocus();
     await user.tab();
@@ -356,14 +368,96 @@ describe("TabStrip", () => {
     expect(screen.getByRole("button", { name: "New query" })).toBeDisabled();
   });
 
-  it("puts the close button before the centred title", () => {
+  it("puts the close button before the centred title on macOS", () => {
     useTabsStore.getState().openTable("c1", users);
     render(<TabStrip />);
     const tab = tabEl(/users/);
     const close = within(tab).getByRole("button", { name: "Close users" });
     const title = within(tab).getByText("users");
     expect(close.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(close).toHaveClass("left-1");
     expect(title.parentElement).toHaveClass("justify-center");
+    // macOS document tabs: dividers and the connection-colour line under the shown tab.
+    expect(tab).toHaveClass("border-r");
+  });
+
+  it("puts the close button at the right edge on Windows, in a bar without dividers", () => {
+    platform.windows = true;
+    useTabsStore.getState().openTable("c1", users);
+    render(<TabStrip />);
+    const tab = tabEl(/users/);
+    const close = within(tab).getByRole("button", { name: "Close users" });
+    const title = within(tab).getByText("users");
+    expect(close.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(close).toHaveClass("right-1");
+    expect(close).not.toHaveClass("left-1");
+    expect(title.parentElement).toHaveClass("justify-center");
+    // The shown tab is an inset filled capsule, with no divider and no underline.
+    expect(tab).toHaveClass("rounded-md", "bg-accent");
+    expect(tab).not.toHaveClass("border-r");
+    expect(tab.className).not.toContain("after:bg-");
+  });
+
+  describe("keyboard", () => {
+    function three() {
+      const s = useTabsStore.getState();
+      const a = s.openTable("c1", users);
+      const b = s.openTable("c1", posts);
+      const q = s.newQuery("c1");
+      s.activate(b);
+      render(<TabStrip />);
+      return { a, b, q };
+    }
+
+    it("walks the tabs with the arrows, Home and End, showing and focusing each", () => {
+      const { a, q } = three();
+      tabEl(/posts/).focus();
+      fireEvent.keyDown(tabEl(/posts/), { key: "ArrowRight" });
+      expect(useTabsStore.getState().activeId).toBe(q);
+      expect(tabEl(/Query 1/)).toHaveFocus();
+      expect(tabEl(/Query 1/)).toHaveAttribute("tabindex", "0");
+      expect(tabEl(/posts/)).toHaveAttribute("tabindex", "-1");
+      // Wraps around at the ends.
+      fireEvent.keyDown(tabEl(/Query 1/), { key: "ArrowRight" });
+      expect(useTabsStore.getState().activeId).toBe(a);
+      fireEvent.keyDown(tabEl(/users/), { key: "ArrowLeft" });
+      expect(useTabsStore.getState().activeId).toBe(q);
+      fireEvent.keyDown(tabEl(/Query 1/), { key: "Home" });
+      expect(useTabsStore.getState().activeId).toBe(a);
+      expect(tabEl(/users/)).toHaveFocus();
+      fireEvent.keyDown(tabEl(/users/), { key: "End" });
+      expect(useTabsStore.getState().activeId).toBe(q);
+    });
+
+    it("closes the focused tab with Delete and focuses the tab shown next", () => {
+      const { a, q } = three();
+      tabEl(/posts/).focus();
+      fireEvent.keyDown(tabEl(/posts/), { key: "Delete" });
+      expect(ids()).toEqual([a, q]);
+      const shown = useTabsStore.getState().activeId;
+      expect(document.activeElement).toBe(
+        document.querySelector(`[role=tab][data-tab-id="${shown}"]`),
+      );
+    });
+
+    it("renames the focused tab with F2 and gives the focus back after Enter", () => {
+      three();
+      tabEl(/posts/).focus();
+      fireEvent.keyDown(tabEl(/posts/), { key: "F2" });
+      const input = screen.getByRole("textbox", { name: "Tab name" });
+      fireEvent.change(input, { target: { value: "articles" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(tabEl(/articles/)).toHaveFocus();
+    });
+
+    it("ignores the keys outside a tab and with a modifier", () => {
+      const { b } = three();
+      fireEvent.keyDown(screen.getByRole("tablist"), { key: "ArrowRight" });
+      fireEvent.keyDown(tabEl(/posts/), { key: "ArrowRight", ctrlKey: true });
+      fireEvent.keyDown(tabEl(/posts/), { key: "Delete", altKey: true });
+      expect(useTabsStore.getState().activeId).toBe(b);
+      expect(ids()).toHaveLength(3);
+    });
   });
 
   it("scrolls horizontally with a vertical mouse wheel", () => {

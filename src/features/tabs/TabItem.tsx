@@ -15,6 +15,7 @@ import { useStructureStore } from "@/features/structure/store";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import type { ActionId } from "@/features/palette/actions";
+import { isWindows } from "@/lib/platform";
 import { accentColor } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
@@ -131,9 +132,12 @@ function TitleInput({ tab }: { tab: Tab }) {
     }, 0);
     return () => clearTimeout(timer);
   }, []);
-  const finish = (rename: boolean) => {
+  const finish = (rename: boolean, refocus = false) => {
     if (done.current) return;
     done.current = true;
+    // Finished from the keyboard (F2, then Enter or Esc): keep the keyboard on the tab instead of
+    // dropping focus to the page when the field goes away.
+    if (refocus) ref.current?.closest<HTMLElement>("[role=tab]")?.focus();
     if (rename) useTabsStore.getState().rename(tab.id, value);
     stopTabRename();
   };
@@ -148,11 +152,11 @@ function TitleInput({ tab }: { tab: Tab }) {
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          finish(true);
+          finish(true, true);
         } else if (e.key === "Escape") {
           e.preventDefault();
           e.stopPropagation();
-          finish(false);
+          finish(false, true);
         }
       }}
       onBlur={() => finish(true)}
@@ -195,6 +199,49 @@ export function TabItem({
       ? "Unsaved changes"
       : `${unsaved} pending change${unsaved === 1 ? "" : "s"}`;
   const hint = preview ? " (preview: double-click to keep it open)" : "";
+  const closeButton = (
+    <button
+      type="button"
+      aria-label={`Close ${tab.title}`}
+      // ⌘W, Delete on the focused tab and the context menu close tabs from the keyboard without
+      // a stop per tab.
+      tabIndex={-1}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        if (e.button === 1) {
+          e.preventDefault();
+          onClose();
+        }
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClose();
+      }}
+      className={cn(
+        "text-muted-foreground hover:text-foreground focus-visible:ring-ring absolute top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset",
+        // macOS puts the close button at the tab's left edge, Windows (TablePlus included) at its
+        // right edge. The title keeps symmetric padding either way, so it stays centred. On
+        // Windows the shown tab is already filled with the accent colour, so hover goes darker.
+        isWindows ? "hover:bg-foreground/10 right-1" : "hover:bg-accent left-1",
+        // The open tab shows its close button. Tabs with unsaved work show a dot until hover.
+        unsaved === 0 && !active && "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+      )}
+    >
+      {unsaved > 0 && (
+        <span
+          data-slot="tab-dirty-dot"
+          className="bg-warning size-2 rounded-full group-hover:hidden group-has-[button:focus-visible]:hidden"
+        />
+      )}
+      <X
+        aria-hidden
+        className={cn(
+          "size-3.5",
+          unsaved > 0 && "hidden group-hover:block group-has-[button:focus-visible]:block",
+        )}
+      />
+    </button>
+  );
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -213,7 +260,9 @@ export function TabItem({
           role="tab"
           aria-selected={active}
           aria-label={unsaved > 0 ? `${name} (${unsavedLabel})` : name}
-          tabIndex={-1}
+          // Roving tab stop (WAI-ARIA tabs): Tab reaches the shown tab, the arrows walk the others
+          // (TabStrip's tablist handles them).
+          tabIndex={active ? 0 : -1}
           data-tab-id={tab.id}
           data-preview={preview || undefined}
           title={(unsaved > 0 ? `${name} — ${unsavedLabel}` : name) + hint}
@@ -241,62 +290,40 @@ export function TabItem({
           className={cn(
             // macOS document tabs (TablePlus): the tabs share the whole bar in equal widths (one tab
             // spans it), down to 110px each; past that the row scrolls.
-            "group border-border focus-visible:ring-ring relative flex h-full min-w-[110px] flex-[1_1_0] cursor-default items-center border-r text-[12px] leading-4 transition-colors select-none last:border-r-0 focus-visible:ring-1 focus-visible:ring-inset",
+            "group focus-visible:ring-ring relative flex min-w-[110px] flex-[1_1_0] cursor-default items-center text-[12px] leading-4 transition-colors select-none focus-visible:ring-1 focus-visible:ring-inset",
+            isWindows
+              ? // TablePlus for Windows draws plain titles with no dividers, and the shown tab as a
+                // soft filled capsule inset in the bar.
+                "mx-0.5 my-1 rounded-md"
+              : "border-border h-full border-r last:border-r-0",
             active
               ? [
-                  "bg-background text-foreground font-medium after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 forced-colors:outline forced-colors:-outline-offset-1 forced-colors:outline-[Highlight]",
-                  "after:bg-(--tab-accent)",
+                  "text-foreground font-medium forced-colors:outline forced-colors:-outline-offset-1 forced-colors:outline-[Highlight]",
                   // Fainter in the group of a split workspace that does not have the focus.
-                  !groupFocused && "after:opacity-40",
+                  isWindows
+                    ? groupFocused
+                      ? "bg-accent"
+                      : "bg-accent/50"
+                    : [
+                        "bg-background after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5",
+                        "after:bg-(--tab-accent)",
+                        !groupFocused && "after:opacity-40",
+                      ],
                 ]
-              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              : [
+                  "text-muted-foreground hover:text-foreground",
+                  isWindows ? "hover:bg-accent/60" : "hover:bg-accent",
+                ],
             isDragging && "bg-surface z-10 opacity-80 shadow-sm dark:shadow-none",
           )}
         >
-          <button
-            type="button"
-            aria-label={`Close ${tab.title}`}
-            // ⌘W and the context menu close tabs from the keyboard without a stop per tab.
-            tabIndex={-1}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              if (e.button === 1) {
-                e.preventDefault();
-                onClose();
-              }
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose();
-            }}
-            className={cn(
-              // macOS puts the close button at the tab's left edge.
-              "text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring absolute top-1/2 left-1 flex size-6 -translate-y-1/2 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-inset",
-              // The open tab shows its close button. Tabs with unsaved work show a dot until hover.
-              unsaved === 0 &&
-                !active &&
-                "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
-            )}
-          >
-            {unsaved > 0 && (
-              <span
-                data-slot="tab-dirty-dot"
-                className="bg-warning size-2 rounded-full group-hover:hidden group-has-[button:focus-visible]:hidden"
-              />
-            )}
-            <X
-              aria-hidden
-              className={cn(
-                "size-3.5",
-                unsaved > 0 && "hidden group-hover:block group-has-[button:focus-visible]:block",
-              )}
-            />
-          </button>
+          {!isWindows && closeButton}
           <span className="flex min-w-0 flex-1 items-center justify-center gap-2 px-7">
             <Icon
               className={cn(
                 "size-4 shrink-0",
-                active && groupFocused ? "text-brand" : "text-muted-foreground",
+                // Windows keeps the bar calm: no brand colour on the shown tab's icon.
+                active && groupFocused && !isWindows ? "text-brand" : "text-muted-foreground",
               )}
               aria-hidden
             />
@@ -306,6 +333,7 @@ export function TabItem({
               <span className={cn("truncate", preview && "italic")}>{tab.title}</span>
             )}
           </span>
+          {isWindows && closeButton}
         </div>
       </ContextMenuTrigger>
       <TabMenu tab={tab} />
