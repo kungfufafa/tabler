@@ -554,8 +554,8 @@ export function DataGrid({
   // `columns` / `row.cells`. Selection and virtualization use visual indexes; data access uses src.
   const { cols, src } = useMemo(() => layoutColumns(columns, columnState), [columns, columnState]);
   // Columns open sized to their content (TablePlus): each column the user has not sized is fitted
-  // once to the table's first rows. The fit is not remembered, so a later schema or data change
-  // fits again, and a column the user resizes keeps the user's width from then on.
+  // once to the table's first rows, per column set. The fit is not remembered, so a schema change
+  // (or reopening the table) fits again, and a column the user resizes keeps the user's width.
   const [fitted, setFitted] = useState<{ key: string; widths: Record<string, number> } | null>(
     null,
   );
@@ -822,22 +822,34 @@ export function DataGrid({
     },
     [canEditCell, getRow, src, valueAt],
   );
-  // The toast's "Edit" runs later, against the grid as it is then.
-  const startEditRef = useRef(startEdit);
-  startEditRef.current = startEdit;
+  // The toast's "Edit" runs later, against the grid as it is then: rows may have been added,
+  // sorted or paged and columns moved, so it finds the cell again by row key and column id.
+  const latestGrid = useRef({ startEdit, getRow, rowCount, cols });
+  latestGrid.current = { startEdit, getRow, rowCount, cols };
   /**
    * A blur left an edit whose text does not parse: rather than lose it without a word, say why and
    * offer to reopen the editor on the same cell with the typed text.
    */
   const dropInvalidEdit = (pos: CellPos, colName: string, text: string, error: string) => {
+    const rowKey = getRow(pos.r)?.key;
+    const colId = cols[pos.c]?.id;
     toast.error(`${colName}: ${error}`, {
       description: "The edit was not staged.",
       action: {
         label: "Edit",
         onClick: () => {
-          dispatch({ type: "set", pos });
+          const g = latestGrid.current;
+          let r = g.getRow(pos.r)?.key === rowKey ? pos.r : -1;
+          for (let i = 0; r < 0 && i < g.rowCount; i++) if (g.getRow(i)?.key === rowKey) r = i;
+          const c = g.cols.findIndex((col) => col.id === colId);
+          if (r < 0 || c < 0) {
+            toast.message(`The row or the ${colName} column is no longer shown.`);
+            return;
+          }
+          const at = { r, c };
+          dispatch({ type: "set", pos: at });
           focusGrid();
-          startEditRef.current(pos, text);
+          g.startEdit(at, text);
         },
       },
     });

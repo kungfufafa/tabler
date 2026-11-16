@@ -1269,7 +1269,9 @@ export function TableTab({ tab }: { tab: Extract<Tab, { kind: "table" }> }) {
         leading={<ViewSwitch tabId={tab.id} view="table" />}
         canAddRow={canInsert && !!page}
         onAddRow={addRow}
-        readOnlyReason={page ? readOnlyReason : undefined}
+        // Not while the table's metadata is still on its way: `editable` is false until it is in,
+        // which would flash "Read-only" on every table as it opens.
+        readOnlyReason={page && meta.data ? readOnlyReason : undefined}
         offset={byCursor ? (cursorAt?.before ?? 0) : state.offset}
         limit={state.limit}
         pageRows={page?.rows.length ?? 0}

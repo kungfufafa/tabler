@@ -2601,6 +2601,49 @@ describe("DataGrid friendliness", () => {
     expect(screen.getByRole("textbox", { name: "Edit id" })).toHaveValue("12a");
   });
 
+  it("the toast's Edit finds the same row again after the rows moved", () => {
+    let setList: (l: ViewRow[]) => void = () => {};
+    const onFocusCell = vi.fn();
+    function Host() {
+      const [list, set] = useState<ViewRow[]>(rows);
+      setList = set;
+      return (
+        <DataGrid
+          columns={columns}
+          rowCount={list.length}
+          getRow={(i) => list[i]}
+          columnState={layout}
+          editable
+          active
+          onFocusCell={onFocusCell}
+        />
+      );
+    }
+    render(<Host />);
+    const grid = document.querySelector<HTMLElement>('[data-scope="grid"]')!;
+    // The second row's id (pk:2).
+    fireEvent.pointerDown(document.querySelector('[data-cell][data-r="1"][data-c="0"]')!, {
+      button: 0,
+    });
+    toast.error.mockClear();
+    fireEvent.keyDown(grid, { key: "Enter" });
+    const input = screen.getByRole("textbox", { name: "Edit id" });
+    fireEvent.change(input, { target: { value: "x" } });
+    fireEvent.blur(input);
+    const [, options] = toast.error.mock.calls[0]! as unknown as [
+      string,
+      { action: { onClick: () => void } },
+    ];
+    // The rows swap places (a sort, a refresh) before the user clicks Edit.
+    act(() => setList([rows[1]!, rows[0]!]));
+    act(() => options.action.onClick());
+    expect(screen.getByRole("textbox", { name: "Edit id" })).toHaveValue("x");
+    const at = onFocusCell.mock.calls.at(-1)?.[0] as { pos: { r: number; c: number } };
+    // pk:2 is the first row now.
+    expect(at.pos.r).toBe(0);
+    expect(at.pos.c).toBe(0);
+  });
+
   it("focuses a new row on the first column to fill, not on its auto-increment id", () => {
     const auto: GridColumn[] = [
       { ...col("id", "int"), hasDefault: true, isAutoInc: true },
