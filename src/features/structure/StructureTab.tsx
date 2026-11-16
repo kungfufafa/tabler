@@ -847,14 +847,19 @@ function StructureTabView({
     openSqlInNewQueryTab(connectionId, sql, dialect, `${table.name}.sql`);
   }, [qc, connectionId, table, dialect]);
   // The foreign key dialog: a new key (`replaces` null) or the key of a row opened for editing.
-  const [fkDialog, setFkDialog] = useState<{ replaces: string | null; initial?: FkDef } | null>(
-    null,
-  );
+  // Closing keeps the rest, so the dialog stays the same instance while it fades out (its title
+  // does not flip, and focus still returns to the grid); its form remounts on the next open.
+  const [fkDialog, setFkDialog] = useState<{
+    open: boolean;
+    replaces: string | null;
+    initial?: FkDef;
+  }>({ open: false, replaces: null });
   const onEditFk = useCallback(
     (key: string) => {
       const fk = view?.foreignKeys.find((x) => x.key === key);
       if (!fk) return;
       setFkDialog({
+        open: true,
         replaces: key,
         initial: {
           name: fk.name,
@@ -1085,7 +1090,7 @@ function StructureTabView({
                   <ForeignKeysSection
                     rows={v.foreignKeys}
                     editable={editable}
-                    onAdd={() => setFkDialog({ replaces: null })}
+                    onAdd={() => setFkDialog({ open: true, replaces: null })}
                     onEdit={onEditFk}
                     onDrop={(key) => apply((mm, current) => dropForeignKey(mm, current, key))}
                     onRestore={(key) => apply((mm, current) => restoreForeignKey(mm, current, key))}
@@ -1293,15 +1298,14 @@ function StructureTabView({
       />
       {editable && (
         <AddForeignKeyDialog
-          key={fkDialog?.replaces ?? "new"}
-          open={fkDialog !== null}
-          onOpenChange={(o) => !o && setFkDialog(null)}
+          open={fkDialog.open}
+          onOpenChange={(o) => !o && setFkDialog((d) => ({ ...d, open: false }))}
           connectionId={connectionId}
           table={m.table}
           columns={liveColumns}
-          initial={fkDialog?.initial}
+          initial={fkDialog.initial}
           onAdd={(fk) => {
-            const replaces = fkDialog?.replaces ?? null;
+            const replaces = fkDialog.replaces;
             apply((mm, current) =>
               replaces === null
                 ? addForeignKey(mm, current, fk)

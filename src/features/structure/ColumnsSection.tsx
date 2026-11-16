@@ -708,7 +708,7 @@ function FkCell({
       ) : canEdit ? (
         <span className="text-null truncate italic">EMPTY</span>
       ) : null}
-      <CellChevron />
+      {canEdit && <CellChevron />}
     </button>
   );
   // The → follows the key to its table; it sits outside the trigger, which takes no pointer

@@ -388,7 +388,16 @@ describe("columns grid", () => {
     const again = document.querySelector<HTMLElement>('[data-row-kind="fk"][data-status="added"]')!;
     again.focus();
     fireEvent.keyDown(again, { key: "Enter" });
-    expect(await screen.findByRole("dialog", { name: "Edit Foreign Key" })).toBeInTheDocument();
+    const edit = await screen.findByRole("dialog", { name: "Edit Foreign Key" });
+    fireEvent.click(within(edit).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(ops().map((o) => o.op)).toEqual(["dropForeignKey", "addForeignKey"]);
+
+    // + Foreign Key afterwards starts a new, empty key
+    const fks = screen.getByRole("region", { name: "Foreign keys" });
+    fireEvent.click(within(fks).getByRole("button", { name: "Foreign Key" }));
+    const add = await screen.findByRole("dialog", { name: "Add Foreign Key" });
+    expect(within(add).getByLabelText("Constraint name")).toHaveValue("");
   });
 
   it("index, check, foreign key and trigger rows have a right-click menu", async () => {
