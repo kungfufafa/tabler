@@ -57,7 +57,7 @@ function setup() {
   const input = () => screen.getByRole("combobox", { name: "Search history" });
   const option = async (sql: string) =>
     (await screen.findByText(sql, { selector: "pre" })).closest<HTMLElement>("[role=option]")!;
-  return { onInsert, onRun, onOpenChange, input, option, reopen };
+  return { onInsert, onRun, onOpenChange, input, option, reopen, unmount: utils.unmount };
 }
 
 const ids = async () => (await ipc.history.list({ search: null, limit: 200 })).map((e) => e.id);
@@ -125,6 +125,16 @@ describe("HistorySheet", () => {
     });
     expect(await ids()).toEqual([4, 3, 2, 1]);
   }, 15_000);
+
+  it("keeps a delete still in its Undo window when the sheet goes away", async () => {
+    const { option, unmount } = setup();
+    const update = await option(UPDATE);
+    fireEvent.click(within(update).getByTitle(/^Delete entry/));
+    await waitFor(() => expect(screen.queryByText(UPDATE, { selector: "pre" })).toBeNull());
+    expect(await ids()).toEqual([4, 3, 2, 1]);
+    unmount();
+    await waitFor(async () => expect(await ids()).toEqual([4, 2, 1]));
+  });
 
   it("only selects on a click, inserts on a double-click and never runs it", async () => {
     const { option, onInsert, onRun, onOpenChange } = setup();
