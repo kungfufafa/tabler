@@ -341,6 +341,12 @@ describe("process list", () => {
     expect(rowOf(11)).toHaveAttribute("aria-selected", "true");
     expect(rowOf(10)).toHaveAttribute("aria-selected", "false");
     const menu = await screen.findByRole("menu");
+    // Arrows that move in the menu leave the selection it acts on alone.
+    fireEvent.keyDown(within(menu).getAllByRole("menuitem")[0]!, { key: "ArrowUp" });
+    fireEvent.keyDown(within(menu).getAllByRole("menuitem")[0]!, { key: "Delete" });
+    expect(rowOf(11)).toHaveAttribute("aria-selected", "true");
+    expect(rowOf(10)).toHaveAttribute("aria-selected", "false");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy Query" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("select 11"));
 

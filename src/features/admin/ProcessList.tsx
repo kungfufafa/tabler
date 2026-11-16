@@ -127,6 +127,9 @@ function ProcessListBody({ connectionId, driver }: { connectionId: string; drive
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // A row's context menu is portaled but still bubbles its keys here through React: arrows
+    // that move in the menu must not move the selection the menu is about to act on.
+    if (!(e.target instanceof Node) || !e.currentTarget.contains(e.target)) return;
     const mod = isMac ? e.metaKey : e.ctrlKey;
     if (mod && e.key.toLowerCase() === "a") {
       e.preventDefault();
