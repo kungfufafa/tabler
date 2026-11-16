@@ -11,7 +11,13 @@ import { NotifyHost } from "@/features/notify/NotifyHost";
 import { ExportHost } from "./ExportHost";
 import { openExportTables, resetExportStore } from "./store";
 
-const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
+const toast = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  message: vi.fn(),
+  loading: vi.fn(),
+  dismiss: vi.fn(),
+}));
 vi.mock("sonner", () => ({ toast }));
 
 const table = (name: string): TableSummary => ({

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { actions } from "@/features/palette/actions";
 import { capsOf } from "@/lib/caps";
+import { REVEAL_LABEL } from "@/lib/platform";
 import {
   ipc,
   type ConnectionInfo,
@@ -35,7 +36,13 @@ import {
   type ExportSourceSpec,
 } from "./store";
 
-const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
+const toast = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  message: vi.fn(),
+  loading: vi.fn(),
+  dismiss: vi.fn(),
+}));
 vi.mock("sonner", () => ({ toast }));
 
 let info: ConnectionInfo;
@@ -167,7 +174,7 @@ describe("ExportDialog", () => {
     const [title, opts] = toast.success.mock.calls[0]!;
     expect(title).toBe("Exported 40 rows");
     expect(opts.description).toMatch(/^users\.ndjson · /);
-    expect(opts.action.label).toBe("Show in Finder");
+    expect(opts.action.label).toBe(REVEAL_LABEL);
     // Revealing is a no-op in the browser mock.
     expect(() => opts.action.onClick()).not.toThrow();
     // The dialog closes and the choices are remembered.
@@ -435,7 +442,17 @@ describe("ExportDialog", () => {
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(useExportStore.getState().run).not.toBeNull();
+    // The closed dialog leaves a progress toast behind, with Show to bring it back.
+    expect(toast.loading).toHaveBeenLastCalledWith(
+      "Exporting out.csv",
+      expect.objectContaining({
+        id: "export-progress",
+        description: "10 of 20 rows · 840 B",
+        action: expect.objectContaining({ label: "Show" }),
+      }),
+    );
     dialog = await openFromShortcut();
+    expect(toast.dismiss).toHaveBeenCalledWith("export-progress");
     expect(within(dialog).getByRole("radio", { name: "Current page" })).toHaveAttribute(
       "aria-checked",
       "true",
@@ -965,7 +982,7 @@ describe("ExportDialog", () => {
     expect(within(popup).getByText("Export completed")).toBeInTheDocument();
     expect(within(popup).getByText(/^Exported \d+ rows$/)).toBeInTheDocument();
     expect(within(popup).getByText(/users\.csv · /)).toBeInTheDocument();
-    expect(within(popup).getByRole("button", { name: "Show in Finder" })).toBeInTheDocument();
+    expect(within(popup).getByRole("button", { name: REVEAL_LABEL })).toBeInTheDocument();
     expect(toast.success).not.toHaveBeenCalled();
     // OK has the focus: Return closes it.
     expect(within(popup).getByRole("button", { name: "OK" })).toHaveFocus();

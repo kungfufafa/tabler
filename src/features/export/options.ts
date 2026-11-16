@@ -713,13 +713,18 @@ export function defaultFileName(base: string, options: ExportOptions, now: Date)
   return `${safeFileBase(base)}_${timestamp(now)}.${fileExtension(options)}`;
 }
 
+// Paths come from the OS: Windows separates with "\" (and accepts "/"), so both count.
+const lastSeparator = (path: string) => Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+
 export function dirname(path: string): string | null {
-  const i = path.lastIndexOf("/");
-  return i > 0 ? path.slice(0, i) : null;
+  const i = lastSeparator(path);
+  if (i <= 0) return null;
+  // "C:\users.csv" lives in "C:\", not in "C:" (the drive's current folder).
+  return /^[A-Za-z]:$/.test(path.slice(0, i)) ? path.slice(0, i + 1) : path.slice(0, i);
 }
 
 export function basename(path: string): string {
-  return path.slice(path.lastIndexOf("/") + 1);
+  return path.slice(lastSeparator(path) + 1);
 }
 
 // ---- formatting -------------------------------------------------------------------------------

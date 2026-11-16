@@ -1,5 +1,6 @@
 import { Lock, RotateCcw, Search, TriangleAlert } from "lucide-react";
 import { memo, useEffect, useMemo, useState, type KeyboardEvent, type Ref } from "react";
+import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -326,7 +327,12 @@ export function ShortcutsSection({
             disabled={!modified}
             onClick={() => {
               setProblem(null);
+              // One click wipes every custom key: Undo brings them back instead of a confirm.
+              const before = getPrefs().keymapOverrides;
               setPref("keymapOverrides", EMPTY_OVERRIDES);
+              toast.success("All shortcuts are back to their defaults", {
+                action: { label: "Undo", onClick: () => setPref("keymapOverrides", before) },
+              });
             }}
           >
             Reset All
@@ -334,6 +340,14 @@ export function ShortcutsSection({
         </div>
       }
     >
+      {/* At the top, where TablePlus's Keymap explains it, not below a long list. */}
+      <p className="text-muted-foreground px-1 text-xs leading-4">
+        Click a shortcut, then press the new keys.{" "}
+        <Kbd combo="Escape" className="mx-0.5 align-middle" /> cancels,{" "}
+        <Kbd combo="Backspace" className="mx-0.5 align-middle" /> or{" "}
+        <Kbd combo="Delete" className="mx-0.5 align-middle" /> removes it. Menus show your keys too.
+        {LEGEND && <span className="block whitespace-pre">{LEGEND}</span>}
+      </p>
       {groups.length === 0 ? (
         <p className="text-muted-foreground py-10 text-center text-xs">No matches</p>
       ) : (
@@ -360,13 +374,6 @@ export function ShortcutsSection({
           </SettingGroup>
         ))
       )}
-      <p className="text-muted-foreground mt-auto px-1 text-xs leading-4">
-        Click a shortcut and type the new one:{" "}
-        <Kbd combo="Escape" className="mx-0.5 align-middle" /> cancels,{" "}
-        <Kbd combo="Backspace" className="mx-0.5 align-middle" /> removes it. The native menu
-        follows your changes.
-        {LEGEND && <span className="block whitespace-pre">{LEGEND}</span>}
-      </p>
     </SectionShell>
   );
 }

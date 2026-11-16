@@ -101,6 +101,27 @@ function rowsHint(
   return src.filtered ? `${n} ${what} match the filter` : `${n} ${what}`;
 }
 
+/**
+ * The bar while the total is unknown (no row count): a segment sliding along the track, so the
+ * export does not look stuck on an empty bar. With reduced motion it stays still, a partial fill.
+ * Animated with the Web Animations API, which needs no keyframes in the global stylesheet.
+ */
+function SlidingSegment() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof el.animate !== "function") return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const a = el.animate([{ transform: "translateX(-100%)" }, { transform: "translateX(400%)" }], {
+      duration: 1400,
+      easing: "ease-in-out",
+      iterations: Number.POSITIVE_INFINITY,
+    });
+    return () => a.cancel();
+  }, []);
+  return <div ref={ref} data-indeterminate="" className="bg-brand h-full w-1/4 rounded-full" />;
+}
+
 export function Progress({ run }: { run: ExportRun }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -121,10 +142,11 @@ export function Progress({ run }: { run: ExportRun }) {
         </span>
       </div>
       <div className="bg-surface-2 h-1 w-44 overflow-hidden rounded-full">
-        <div
-          className={cn("bg-brand h-full rounded-full", pct === null && "w-0")}
-          style={pct === null ? undefined : { width: `${pct}%` }}
-        />
+        {pct === null ? (
+          <SlidingSegment />
+        ) : (
+          <div className="bg-brand h-full rounded-full" style={{ width: `${pct}%` }} />
+        )}
       </div>
     </div>
   );

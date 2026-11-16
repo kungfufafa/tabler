@@ -1,5 +1,6 @@
 import { Switch } from "@/components/ui/switch";
 import { SettingGroup, SettingRow } from "@/features/settings/controls";
+import { NOTIFICATION_NOUN, REVEAL_LABEL } from "@/lib/platform";
 import { setPref, usePrefs } from "@/stores/prefs";
 
 /**
@@ -14,7 +15,7 @@ export function NotifySettingRows() {
       <SettingRow
         id="pref-export-reveal-popup"
         label="Show open containing folder popup after exporting data"
-        description="After an export or a backup, a popup offers Show in Finder; otherwise a notice says it finished."
+        description={`After an export or a backup, a popup offers ${REVEAL_LABEL}; otherwise a notice says it finished.`}
       >
         <Switch
           id="pref-export-reveal-popup"
@@ -26,7 +27,7 @@ export function NotifySettingRows() {
       <SettingRow
         id="pref-show-notifications"
         label="Show notifications"
-        description="A macOS notification when an export, import, backup or restore finishes (or fails) while Tabler is in the background."
+        description={`A ${NOTIFICATION_NOUN} when an export, import, backup or restore finishes (or fails) while Tabler is in the background.`}
       >
         <Switch
           id="pref-show-notifications"
