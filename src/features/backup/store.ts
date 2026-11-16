@@ -117,7 +117,7 @@ export function backupProgressToast(
   if (s.request !== null || run?.status !== "running") return null;
   return {
     title: run.mode === "backup" ? `Backing up ${run.database}` : `Restoring into ${run.database}`,
-    description: `${bytesLabel(run)}${run.cancelling ? " · canceling…" : ""}`,
+    description: `${bytesLabel(run)}${run.cancelling ? " · cancelling…" : ""}`,
   };
 }
 

@@ -70,4 +70,17 @@ describe("createJobToast", () => {
     job.sync({ title: "Backing up db", description: "3 KB written" });
     expect(toast.loading).toHaveBeenCalledTimes(2);
   });
+
+  it("does not take the late report of its own dismissal for the user closing it", () => {
+    const job = createJobToast({ id: "job", onShow: () => undefined, now });
+    job.sync({ title: "Backing up db", description: "1 KB written" });
+    const late = toast.loading.mock.lastCall![1].onDismiss as () => void;
+    // The window opened and closed again before sonner reported the dismissal.
+    job.sync(null);
+    job.sync({ title: "Backing up db", description: "2 KB written" });
+    late();
+    t += 1_000;
+    job.sync({ title: "Backing up db", description: "3 KB written" });
+    expect(toast.loading).toHaveBeenCalledTimes(3);
+  });
 });

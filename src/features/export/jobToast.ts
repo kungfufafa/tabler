@@ -35,8 +35,15 @@ export function createJobToast({
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** The user closed the toast: no update brings it back until the window opens again. */
   let dismissedByUser = false;
+  /**
+   * Bumped each time we take the toast down: sonner reports our own `toast.dismiss` through
+   * `onDismiss` as well, a render later, which must not count as the user closing a toast that
+   * was shown again in the meantime.
+   */
+  let generation = 0;
 
   const show = (content: JobToastContent) => {
+    const mine = generation;
     shown = content;
     pending = null;
     at = now();
@@ -46,7 +53,7 @@ export function createJobToast({
       duration: Number.POSITIVE_INFINITY,
       action: { label: "Show", onClick: onShow },
       onDismiss: () => {
-        if (shown) dismissedByUser = true;
+        if (shown && mine === generation) dismissedByUser = true;
       },
     });
   };
@@ -62,6 +69,7 @@ export function createJobToast({
         clearTimer();
         pending = null;
         dismissedByUser = false;
+        generation += 1;
         if (shown) {
           shown = null;
           toast.dismiss(id);
