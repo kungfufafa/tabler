@@ -4,7 +4,7 @@ import type { QueryEvent } from "@/lib/ipc";
 import { ResultStore } from "@/stores/resultData";
 import { firstLine } from "./labels";
 import { MessagesView, VIRTUALIZE_FROM } from "./MessagesView";
-import { applyEvent, newRun, type RunState } from "./runModel";
+import { applyEvent, failRun, newRun, normalizeError, type RunState } from "./runModel";
 
 // Counts row renders: every StatementRow render calls `firstLine` once.
 vi.mock("./labels", async (importOriginal) => {
@@ -107,5 +107,35 @@ describe("MessagesView", () => {
     const run = runOf(VIRTUALIZE_FROM - 1);
     const { container } = render(<MessagesView tabId="t-messages" run={run} />);
     expect(container.querySelectorAll("li")).toHaveLength(VIRTUALIZE_FROM - 1);
+  });
+
+  it("shows a statement's whole SQL in its tooltip, up to 600 characters", () => {
+    const long = `select ${"x, ".repeat(300)}1`;
+    let run = newRun("r", `select 1\nfrom t;\n${long}`, 0);
+    for (const [index, sql] of ["select 1\nfrom t", long].entries())
+      run = applyEvent(
+        run,
+        { event: "started", data: { index, sql, span: { start: 0, end: 1, line: 1 } } },
+        sink,
+      );
+    const { getByText, container } = render(<MessagesView tabId="t-messages" run={run} />);
+    expect(getByText("select 1 …")).toHaveAttribute("title", "select 1\nfrom t");
+    const titles = [...container.querySelectorAll("span[title]")].map((s) =>
+      s.getAttribute("title"),
+    );
+    expect(titles).toContain(`${long.slice(0, 600)}…`);
+  });
+
+  it("says the app's own error codes in plain words, or not at all", () => {
+    const fail = (code: string) =>
+      failRun(newRun("r", "select 1", 0), normalizeError({ code, message: "It failed" }), 1);
+    const { container, rerender } = render(
+      <MessagesView tabId="t-messages" run={fail("NOT_CONNECTED")} />,
+    );
+    expect(container).toHaveTextContent("Connection lost");
+    expect(container).not.toHaveTextContent("NOT_CONNECTED");
+    rerender(<MessagesView tabId="t-messages" run={fail("INTERNAL")} />);
+    expect(container).toHaveTextContent("It failed");
+    expect(container).not.toHaveTextContent("INTERNAL");
   });
 });

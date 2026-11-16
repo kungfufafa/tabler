@@ -8,11 +8,33 @@ import { appliesPartially, useCaps } from "@/lib/caps";
 import type { Dialect } from "@/lib/ipc";
 import type { PlanState } from "@/stores/queryTabs";
 import { useTabsStore } from "@/stores/tabs";
+import { useDelayedFlag } from "@/hooks/useDelayedFlag";
+import { BUSY_LABEL_DELAY_MS } from "./controller";
 import { ElapsedTimer } from "./ElapsedTimer";
 import { ErrorBlock } from "./ErrorBlock";
 import { errorRange } from "./errorPos";
 import { firstLine } from "./labels";
 import { StaticGrid } from "./ResultSetGrid";
+
+/**
+ * The running explain's time in the header: hidden for the first second (fast plans never flash
+ * it), then shown where the plan's duration goes once it is done.
+ */
+function PlanTimer({ since }: { since: number }) {
+  const visible = useDelayedFlag(true, BUSY_LABEL_DELAY_MS);
+  return (
+    <span
+      data-slot="plan-elapsed"
+      className={
+        visible
+          ? "animate-in fade-in tabular-nums duration-300 motion-reduce:animate-none"
+          : "sr-only"
+      }
+    >
+      <ElapsedTimer since={since} />
+    </span>
+  );
+}
 
 /** The "Plan" pane: EXPLAIN output as text (when the dialect has a textual plan) or rows. */
 export function PlanView({
@@ -37,11 +59,7 @@ export function PlanView({
       <div className="border-gridline text-muted-foreground flex h-7 shrink-0 items-center gap-2 border-b px-3 text-xs">
         <span className="text-foreground font-medium">{title}</span>
         <span className="min-w-0 flex-1 truncate font-mono">{firstLine(plan.sql)}</span>
-        {plan.status === "running" && (
-          <span className="sr-only">
-            <ElapsedTimer since={plan.startedAt} />
-          </span>
-        )}
+        {plan.status === "running" && <PlanTimer since={plan.startedAt} />}
         {plan.result && (
           <span className="tabular-nums">{formatDuration(plan.result.durationMs)}</span>
         )}

@@ -6,6 +6,20 @@ import { focusEditor, getEditorState } from "./editorStates";
 import type { DocRange } from "./errorPos";
 import { locateSubmitted, submissionEditor, useSubmissionsVersion } from "./submissions";
 
+/**
+ * The app's own error codes (`AppError::code` in src-tauri/src/error.rs) said in plain words, for
+ * the ones that tell the user something the message may not: where the failure was. The others
+ * (DB_ERROR, QUERY_TIMEOUT, INTERNAL…) are left out; the server's SQLSTATE and error number stay,
+ * as TablePlus shows the server's message without app-internal codes.
+ */
+const CODE_LABELS: Partial<Record<string, string>> = {
+  NOT_CONNECTED: "Connection lost",
+  CONNECT_FAILED: "Could not reach the server",
+  AUTH_FAILED: "Sign-in failed",
+  TIMEOUT: "The server stopped answering",
+  SSH_TUNNEL: "SSH tunnel",
+};
+
 /** 1-based line / column of a document offset in an editor. */
 function docLocation(key: string, offset: number): { line: number; column: number } | null {
   const state = getEditorState(key);
@@ -46,7 +60,7 @@ export function ErrorBlock({
     loc && `Line ${loc.line}, column ${loc.column}`,
     error.sqlstate && `SQLSTATE ${error.sqlstate}`,
     error.vendorCode !== null && `Error ${error.vendorCode}`,
-    error.code !== "DB_ERROR" && error.code,
+    CODE_LABELS[error.code],
   ].filter(Boolean);
   return (
     <div
