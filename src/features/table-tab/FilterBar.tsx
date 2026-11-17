@@ -1,5 +1,5 @@
 import { ChevronDown, Copy, FileDown, Minus, Plus, Settings } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Kbd } from "@/components/Kbd";
 import { Button } from "@/components/ui/button";
@@ -43,7 +43,7 @@ import {
   type FilterDefaultState,
 } from "@/stores/prefs";
 import type { FilterRowSpec } from "@/stores/tableTabs";
-import { BAR_HOVER } from "./BarParts";
+import { BAR_HOVER, BarIconButton, BarTooltip } from "./BarParts";
 import { focusFilterRow, type FilterPart } from "./filterFocus";
 import { RawSqlInput } from "./RawSqlInput";
 import {
@@ -91,6 +91,26 @@ function valuePlaceholder(def: OpDef, any: boolean, hex: boolean): string {
 
 /** Display form of an action's primary shortcut ("" when it has none). */
 const keysOf = (id: ActionId) => formatCombo(shortcutFor(id) ?? "");
+
+/**
+ * The strip's key legend (TablePlus prints one between SQL and Clear). Read when rendered, so a
+ * rebound key shows as bound; a key with no binding is left out.
+ */
+const LEGEND_ITEMS: ReadonlyArray<{ label: string; id?: ActionId; keys?: string }> = [
+  { label: "Insert", id: "filter.duplicate" },
+  { label: "Remove", id: "filter.remove" },
+  { label: "Up", id: "filter.prev" },
+  { label: "Down", id: "filter.next" },
+  { label: "Check", id: "filter.toggle" },
+  { label: "Apply", keys: "Enter" },
+  { label: "Hide", keys: "Escape" },
+];
+function legendText(): string {
+  return LEGEND_ITEMS.flatMap(({ label, id, keys }) => {
+    const combo = keys ?? (id ? shortcutFor(id) : undefined);
+    return combo ? [`${label}: ${formatCombo(combo)}`] : [];
+  }).join("  ·  ");
+}
 
 const COLUMN_LABELS: Record<FilterDefaultColumn, string> = {
   primaryKey: "Primary key when available",
@@ -149,17 +169,18 @@ function SqlButton({
   );
   return (
     <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-label="Show the filter's SQL"
-          title="Show the query of the rows shown"
-          className={cn("text-muted-foreground hover:text-foreground font-mono", BAR_HOVER)}
-        >
-          SQL
-        </Button>
-      </PopoverTrigger>
+      <BarTooltip label="Show the query of the rows shown">
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label="Show the filter's SQL"
+            className={cn("text-muted-foreground hover:text-foreground font-mono", BAR_HOVER)}
+          >
+            SQL
+          </Button>
+        </PopoverTrigger>
+      </BarTooltip>
       <PopoverContent
         side="bottom"
         align="start"
@@ -224,17 +245,18 @@ function FilterSettings() {
   const state = usePrefs((p) => p.filterDefaultState);
   return (
     <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label="Filter settings"
-          title="Filter settings"
-          className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
-        >
-          <Settings />
-        </Button>
-      </DropdownMenuTrigger>
+      <BarTooltip label="Filter settings">
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Filter settings"
+            className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
+          >
+            <Settings />
+          </Button>
+        </DropdownMenuTrigger>
+      </BarTooltip>
       <DropdownMenuContent align="start" side="bottom" className="w-60">
         <DropdownMenuLabel>Default filter column</DropdownMenuLabel>
         <DropdownMenuRadioGroup
@@ -567,9 +589,13 @@ export function FilterBar({
       else onApply();
     }
   };
-  /** The row is applied as it reads now (its Apply button says "Applied"). */
+  /**
+   * The row is applied as it reads now (its Apply button says "Applied"). A value the column
+   * cannot take is left out of the query (`toFilterGroup`), so such a row never reads "Applied".
+   */
   const isApplied = (row: FilterRowSpec) =>
-    appliedRows?.some(
+    !rowValueError(row, columns) &&
+    (appliedRows ?? []).some(
       (a) =>
         a.id === row.id &&
         a.enabled &&
@@ -578,7 +604,7 @@ export function FilterBar({
         a.op === row.op &&
         a.value === row.value &&
         a.value2 === row.value2,
-    ) ?? false;
+    );
   const columnNames = columns.map((c) => c.name);
   const applyTitle = `Apply all checked filters (${formatCombo("Enter")} in a value, ${keysOf("filter.apply")} with AND, ${keysOf("filter.apply-or")} with OR)`;
   const applyShortcut = shortcutFor("filter.apply");
@@ -614,213 +640,230 @@ export function FilterBar({
           const valueError = rowValueError(row, columns);
           const hex = columns.find((c) => c.name === row.column)?.kind === "bytes";
           return (
-            <div
-              key={row.id}
-              data-filter-row={row.id}
-              className="flex min-w-0 flex-wrap items-center gap-1 @lg:flex-nowrap"
-            >
-              <Checkbox
-                checked={row.enabled}
-                onCheckedChange={(v) => update(row.id, { enabled: v === true })}
-                aria-label="Enable filter"
-                data-filter-part="check"
-                title={`${row.enabled ? "Applied (uncheck to skip it)" : "Skipped (check to apply it)"} · ${keysOf("filter.toggle")}`}
-              />
-              {joined && (
-                <div className="flex w-10 shrink-0 justify-center">
-                  {i > 0 && (
-                    <button
-                      type="button"
-                      className="text-brand hover:bg-accent focus-visible:ring-ring/50 rounded px-1 font-mono text-xs leading-5 transition-colors outline-none focus-visible:ring-2"
-                      title="Toggle AND / OR for all conditions"
-                      onClick={() => onChange(rows, conjunction === "and" ? "or" : "and")}
-                    >
-                      {conjunction.toUpperCase()}
-                    </button>
-                  )}
-                </div>
-              )}
-              <Select
-                value={row.column}
-                onValueChange={(v) => changeColumn(row, v)}
-                {...popupProps(row, "column")}
+            <Fragment key={row.id}>
+              <div
+                data-filter-row={row.id}
+                className="flex min-w-0 flex-wrap items-center gap-1 @lg:flex-nowrap"
               >
-                <SelectTrigger
-                  size="sm"
-                  aria-label="Filter column"
-                  data-filter-part="column"
-                  title={`Column (${keysOf("filter.column")})`}
-                  className={cn(
-                    FIELD_CLASS,
-                    "shrink-0",
-                    raw ? "w-28" : "w-40 @max-xl:w-32 @max-md:w-24",
-                  )}
-                >
-                  <SelectValue placeholder="Column" />
-                </SelectTrigger>
-                <SelectContent>
-                  {rawFilter && (
-                    <SelectItem value={RAW_SQL_COLUMN} className="text-xs">
-                      {rawFilter.label}
-                      <span className="text-muted-foreground ml-2 font-mono">{rawFilter.hint}</span>
-                    </SelectItem>
-                  )}
-                  {session.anyColumn && (
-                    <SelectItem value={ANY_COLUMN} className="text-xs">
-                      Any column
-                    </SelectItem>
-                  )}
-                  {(rawFilter || session.anyColumn) && <SelectSeparator />}
-                  {columns.map((c) => (
-                    <SelectItem key={c.name} value={c.name} className="font-mono text-xs">
-                      {c.name}
-                      <span className="text-muted-foreground ml-2">{c.dataType}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {raw ? (
-                <RawSqlInput
-                  value={row.value}
-                  onValueChange={(value) => update(row.id, { value })}
-                  onEnter={() => applyRow(row.id)}
-                  dialect={session.raw === "sqlWhere" ? dialect : null}
-                  table={table}
-                  columns={columnNames}
-                  placeholder={rawFilter?.placeholder ?? RAW_SQL_PLACEHOLDER}
-                  aria-label={session.raw === "sqlWhere" ? "Raw SQL condition" : "Raw filter"}
-                  data-filter-value
-                  data-filter-part="value"
-                  spellCheck={false}
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  className={FIELD_CLASS}
-                  autoFocus={i === rows.length - 1 && row.value === ""}
+                <Checkbox
+                  checked={row.enabled}
+                  onCheckedChange={(v) => update(row.id, { enabled: v === true })}
+                  aria-label="Enable filter"
+                  data-filter-part="check"
+                  title={`${row.enabled ? "Applied (uncheck to skip it)" : "Skipped (check to apply it)"} · ${keysOf("filter.toggle")}`}
                 />
-              ) : (
+                {joined && (
+                  <div className="flex w-10 shrink-0 justify-center">
+                    {i > 0 && (
+                      <button
+                        type="button"
+                        className="text-brand hover:bg-accent focus-visible:ring-ring/50 rounded px-1 font-mono text-xs leading-5 transition-colors outline-none focus-visible:ring-2"
+                        title="Toggle AND / OR for all conditions"
+                        onClick={() => onChange(rows, conjunction === "and" ? "or" : "and")}
+                      >
+                        {conjunction.toUpperCase()}
+                      </button>
+                    )}
+                  </div>
+                )}
                 <Select
-                  value={row.op}
-                  onValueChange={(v) => update(row.id, { op: v as FilterOp })}
-                  {...popupProps(row, "op")}
+                  value={row.column}
+                  onValueChange={(v) => changeColumn(row, v)}
+                  {...popupProps(row, "column")}
                 >
                   <SelectTrigger
                     size="sm"
-                    aria-label="Filter operator"
-                    data-filter-part="op"
-                    title={`Operator (${keysOf("filter.operator")})`}
-                    className={cn(FIELD_CLASS, "w-28 shrink-0 @max-xl:w-24 @max-md:w-20")}
+                    aria-label="Filter column"
+                    data-filter-part="column"
+                    title={`Column (${keysOf("filter.column")})`}
+                    className={cn(
+                      FIELD_CLASS,
+                      "shrink-0",
+                      raw ? "w-28" : "w-40 @max-xl:w-32 @max-md:w-24",
+                    )}
                   >
-                    <SelectValue>{opLabel(row.op, dialect)}</SelectValue>
+                    <SelectValue placeholder="Column" />
                   </SelectTrigger>
                   <SelectContent>
-                    {ops.map((o) => (
-                      <SelectItem key={o.op} value={o.op} className="font-mono text-xs">
-                        {opLabel(o.op, dialect)}
+                    {rawFilter && (
+                      <SelectItem value={RAW_SQL_COLUMN} className="text-xs">
+                        {rawFilter.label}
+                        <span className="text-muted-foreground ml-2 font-mono">
+                          {rawFilter.hint}
+                        </span>
+                      </SelectItem>
+                    )}
+                    {session.anyColumn && (
+                      <SelectItem value={ANY_COLUMN} className="text-xs">
+                        Any column
+                      </SelectItem>
+                    )}
+                    {(rawFilter || session.anyColumn) && <SelectSeparator />}
+                    {columns.map((c) => (
+                      <SelectItem key={c.name} value={c.name} className="font-mono text-xs">
+                        {c.name}
+                        <span className="text-muted-foreground ml-2">{c.dataType}</span>
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              )}
-              {!raw && def.arity !== 0 && (
-                <Input
-                  value={row.value}
-                  onChange={(e) => update(row.id, { value: e.target.value })}
-                  onKeyDown={onKey}
-                  aria-label="Filter value"
-                  aria-invalid={valueError ? true : undefined}
-                  title={valueError ?? undefined}
-                  data-filter-value
-                  data-filter-part="value"
-                  placeholder={valuePlaceholder(def, any, hex && !isTextValueOp(row.op))}
-                  className={cn(FIELD_CLASS, "min-w-12 flex-1")}
-                  autoFocus={i === rows.length - 1 && row.value === ""}
-                />
-              )}
-              {!raw && def.arity === 2 && (
-                <>
-                  <span className="text-muted-foreground text-xs">AND</span>
+                {raw ? (
+                  <RawSqlInput
+                    value={row.value}
+                    onValueChange={(value) => update(row.id, { value })}
+                    onEnter={() => applyRow(row.id)}
+                    dialect={session.raw === "sqlWhere" ? dialect : null}
+                    table={table}
+                    columns={columnNames}
+                    placeholder={rawFilter?.placeholder ?? RAW_SQL_PLACEHOLDER}
+                    aria-label={session.raw === "sqlWhere" ? "Raw SQL condition" : "Raw filter"}
+                    data-filter-value
+                    data-filter-part="value"
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    className={FIELD_CLASS}
+                    autoFocus={i === rows.length - 1 && row.value === ""}
+                  />
+                ) : (
+                  <Select
+                    value={row.op}
+                    onValueChange={(v) => update(row.id, { op: v as FilterOp })}
+                    {...popupProps(row, "op")}
+                  >
+                    <SelectTrigger
+                      size="sm"
+                      aria-label="Filter operator"
+                      data-filter-part="op"
+                      title={`Operator (${keysOf("filter.operator")})`}
+                      className={cn(FIELD_CLASS, "w-28 shrink-0 @max-xl:w-24 @max-md:w-20")}
+                    >
+                      <SelectValue>{opLabel(row.op, dialect)}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ops.map((o) => (
+                        <SelectItem key={o.op} value={o.op} className="font-mono text-xs">
+                          {opLabel(o.op, dialect)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                {!raw && def.arity !== 0 && (
                   <Input
-                    value={row.value2}
-                    onChange={(e) => update(row.id, { value2: e.target.value })}
+                    value={row.value}
+                    onChange={(e) => update(row.id, { value: e.target.value })}
                     onKeyDown={onKey}
-                    aria-label="Second filter value"
+                    aria-label="Filter value"
                     aria-invalid={valueError ? true : undefined}
                     title={valueError ?? undefined}
-                    placeholder={hex ? "hex, e.g. ffff" : undefined}
-                    data-filter-part="value2"
+                    data-filter-value
+                    data-filter-part="value"
+                    placeholder={valuePlaceholder(def, any, hex && !isTextValueOp(row.op))}
                     className={cn(FIELD_CLASS, "min-w-12 flex-1")}
+                    autoFocus={i === rows.length - 1 && row.value === ""}
                   />
-                </>
-              )}
-              {!hasValue && <span className="flex-1" />}
-              <div className="ml-auto flex shrink-0 items-center">
-                <Button
-                  variant={isApplied(row) ? "ghost" : "outline"}
-                  size="xs"
-                  className={cn(
-                    "mr-1 w-16 transition-colors",
-                    isApplied(row) && cn("text-muted-foreground", BAR_HOVER),
-                  )}
-                  data-filter-part="apply"
-                  onClick={() => applyRow(row.id)}
-                  title={
-                    onApplyRow
-                      ? `Apply this filter alone (${formatCombo("Enter")} in its value); Apply All applies the checked ones`
-                      : applyTitle
-                  }
-                >
-                  {isApplied(row) ? "Applied" : "Apply"}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
-                  aria-label="Remove filter"
-                  title={`Remove this condition (${keysOf("filter.remove")})`}
-                  onClick={() => remove(row.id)}
-                >
-                  <Minus />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
-                  aria-label="Add filter"
-                  title={`Add a condition below (${keysOf("filter.duplicate")} duplicates this one)`}
-                  onClick={() => addAfter(row.id)}
-                >
-                  <Plus />
-                </Button>
+                )}
+                {!raw && def.arity === 2 && (
+                  <>
+                    <span className="text-muted-foreground text-xs">AND</span>
+                    <Input
+                      value={row.value2}
+                      onChange={(e) => update(row.id, { value2: e.target.value })}
+                      onKeyDown={onKey}
+                      aria-label="Second filter value"
+                      aria-invalid={valueError ? true : undefined}
+                      title={valueError ?? undefined}
+                      placeholder={hex ? "hex, e.g. ffff" : undefined}
+                      data-filter-part="value2"
+                      className={cn(FIELD_CLASS, "min-w-12 flex-1")}
+                    />
+                  </>
+                )}
+                {!hasValue && <span className="flex-1" />}
+                <div className="ml-auto flex shrink-0 items-center">
+                  <Button
+                    variant={isApplied(row) ? "ghost" : "outline"}
+                    size="xs"
+                    className={cn(
+                      "mr-1 w-16 transition-colors",
+                      isApplied(row) && cn("text-muted-foreground", BAR_HOVER),
+                    )}
+                    data-filter-part="apply"
+                    onClick={() => applyRow(row.id)}
+                    title={
+                      onApplyRow
+                        ? `Apply this filter alone (${formatCombo("Enter")} in its value); Apply All applies the checked ones`
+                        : applyTitle
+                    }
+                  >
+                    {isApplied(row) ? "Applied" : "Apply"}
+                  </Button>
+                  <BarIconButton
+                    label="Remove filter"
+                    tooltip="Remove this condition"
+                    action="filter.remove"
+                    onClick={() => remove(row.id)}
+                  >
+                    <Minus />
+                  </BarIconButton>
+                  <BarIconButton
+                    label="Add filter"
+                    tooltip="Add a condition like this one below"
+                    action="filter.duplicate"
+                    onClick={() => addAfter(row.id)}
+                  >
+                    <Plus />
+                  </BarIconButton>
+                </div>
               </div>
-            </div>
+              {/* Said in words, not only by a red border: this condition is not applied. */}
+              {valueError && (
+                <p role="alert" className="text-error truncate pl-6 text-xs" title={valueError}>
+                  {`${row.column}: ${valueError} — this condition is skipped until it is fixed.`}
+                </p>
+              )}
+            </Fragment>
           );
         })}
       </div>
       <div className="border-border flex h-8 items-center gap-1 border-t px-2">
         <FilterSettings />
         {onExport && (
+          <BarTooltip label="Export the filtered rows">
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={onExport}
+              className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
+            >
+              <FileDown />
+              Export
+            </Button>
+          </BarTooltip>
+        )}
+        <SqlButton sql={sql} dirty={dirty} dialect={dialect} />
+        {/* TablePlus prints the bar's keys in the strip; dropped when the window is narrow. */}
+        <span className="flex min-w-0 flex-1 justify-center px-2">
+          <span
+            data-testid="filter-keys"
+            aria-hidden
+            className="text-muted-foreground truncate text-[11px] @max-lg:hidden"
+          >
+            {legendText()}
+          </span>
+        </span>
+        <BarTooltip label="Remove every condition and show all rows">
           <Button
             variant="ghost"
             size="xs"
-            onClick={onExport}
+            onClick={onClear}
+            disabled={rows.length === 0}
             className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
-            title="Export the filtered rows"
           >
-            <FileDown />
-            Export
+            Clear
           </Button>
-        )}
-        <SqlButton sql={sql} dirty={dirty} dialect={dialect} />
-        <span className="flex-1" />
-        <Button
-          variant="ghost"
-          size="xs"
-          onClick={onClear}
-          disabled={rows.length === 0}
-          className={cn("text-muted-foreground hover:text-foreground", BAR_HOVER)}
-        >
-          Clear
-        </Button>
+        </BarTooltip>
         {applyShortcut && <Kbd combo={applyShortcut} className="mr-1 @max-lg:hidden" />}
         <ApplyAll dirty={dirty} title={applyTitle} onApply={onApply} />
       </div>

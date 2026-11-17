@@ -13,7 +13,12 @@ import { dropResults, resultData } from "@/stores/resultData";
 import { useTabsStore } from "@/stores/tabs";
 import { bufferKey } from "./changes";
 import { RerunConfirmDialog } from "./RerunConfirmDialog";
-import { answerRerunConfirm, confirmRerunDiscard, useRerunConfirmStore } from "./rerunConfirm";
+import {
+  answerRerunConfirm,
+  confirmRerunDiscard,
+  useRerunConfirmStore,
+  type RerunAnswer,
+} from "./rerunConfirm";
 import {
   installResultsLifecycle,
   pendingForRun,
@@ -26,6 +31,13 @@ import {
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), message: vi.fn() }));
 vi.mock("sonner", () => ({ toast }));
 vi.mock("@/features/safety/guard", () => ({ guardExecution: vi.fn(async () => true) }));
+const commitWorkspace = vi.hoisted(() =>
+  vi.fn(async (_connectionId: string, _opts?: { onCommitted?: () => void }) => false),
+);
+vi.mock("@/features/commit/workspace", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/commit/workspace")>()),
+  commitWorkspace,
+}));
 
 const TAB = "q1";
 const CONN = "c1";
@@ -123,7 +135,7 @@ describe("re-running a query whose results hold uncommitted edits", () => {
     const run = vi.spyOn(ipc.query, "run").mockResolvedValue([]);
     const done = runQuery(TAB, "current");
     await flush();
-    answerRerunConfirm(true);
+    answerRerunConfirm("discard");
     await done;
     expect(run).toHaveBeenCalledOnce();
     expect(getQueryTab(TAB).run?.id).not.toBe("run1");
@@ -133,6 +145,24 @@ describe("re-running a query whose results hold uncommitted edits", () => {
       expect.stringContaining("discarded"),
       expect.anything(),
     );
+  });
+
+  it("Commit and Run commits through the Preview sheet first, then runs", async () => {
+    const run = vi.spyOn(ipc.query, "run").mockResolvedValue([]);
+    commitWorkspace.mockClear();
+    const done = runQuery(TAB, "current");
+    await flush();
+    answerRerunConfirm("commit");
+    await done;
+    // Nothing runs, and nothing is dropped, until the commit went through.
+    expect(run).not.toHaveBeenCalled();
+    expect(pendingForTab(useResultsStore.getState(), TAB)).toBe(1);
+    expect(commitWorkspace).toHaveBeenCalledWith(CONN, { onCommitted: expect.any(Function) });
+    // The sheet committed: the edits are gone, and the run follows without asking again.
+    useResultsStore.setState({ edits: {} });
+    commitWorkspace.mock.calls[0]![1]!.onCommitted!();
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    expect(useRerunConfirmStore.getState().request).toBeNull();
   });
 
   it("does not ask without edits, nor for a run started elsewhere (Re-run), which toasts", async () => {
@@ -156,19 +186,27 @@ describe("RerunConfirmDialog", () => {
 
   it("asks with the count; ⌘↩ confirms", async () => {
     render(<RerunConfirmDialog />);
-    let answer: Promise<boolean> = Promise.resolve(false);
+    let answer: Promise<RerunAnswer> = Promise.resolve(false);
     act(() => void (answer = confirmRerunDiscard(TAB, 3)));
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Discard 3 uncommitted result changes and run?");
     fireEvent.keyDown(dialog, { key: "Enter", code: "Enter", ...mod });
-    await expect(answer).resolves.toBe(true);
+    await expect(answer).resolves.toBe("discard");
     expect(useRerunConfirmStore.getState().request).toBeNull();
+  });
+
+  it("offers Commit and Run", async () => {
+    render(<RerunConfirmDialog />);
+    let answer: Promise<RerunAnswer> = Promise.resolve(false);
+    act(() => void (answer = confirmRerunDiscard(TAB, 1)));
+    fireEvent.click(await screen.findByRole("button", { name: "Commit and Run…" }));
+    await expect(answer).resolves.toBe("commit");
   });
 
   it("Cancel (or a newer question) answers no", async () => {
     render(<RerunConfirmDialog />);
-    let first: Promise<boolean> = Promise.resolve(true);
-    let second: Promise<boolean> = Promise.resolve(true);
+    let first: Promise<RerunAnswer> = Promise.resolve("discard");
+    let second: Promise<RerunAnswer> = Promise.resolve("discard");
     act(() => void (first = confirmRerunDiscard(TAB, 1)));
     act(() => void (second = confirmRerunDiscard(TAB, 2)));
     await expect(first).resolves.toBe(false);

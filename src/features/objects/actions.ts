@@ -4,7 +4,11 @@ import { openCreateSchema } from "@/features/admin/store";
 import { markDefinition } from "@/features/commit/definitions";
 import { notAvailableFor } from "@/features/drivers/catalog";
 import { applyToEditor } from "@/features/editor/editorStates";
-import { openSqlInNewQueryTab } from "@/features/editor/openSql";
+import {
+  activateObjectTab,
+  openSqlInNewQueryTab,
+  openSqlInObjectTab,
+} from "@/features/editor/openSql";
 import { openExport, openExportTables } from "@/features/export/store";
 import { openImport, type ImportKind } from "@/features/import/store";
 import { actions } from "@/features/palette/actions";
@@ -95,30 +99,70 @@ export function openTableTab(
   showWorkspace();
 }
 
-/** Opens a routine's definition in a new SQL tab titled with its name. */
-export async function openRoutine(ctx: ObjectContext, r: RoutineSummary): Promise<void> {
+/** What `openSqlInObjectTab` remembers a routine's tab by (overloads are told apart). */
+const routineTabKey = (r: RoutineSummary) =>
+  `routine\u0000${r.schema ?? ""}\u0000${r.name}\u0000${r.kind}\u0000${r.identityArguments}`;
+const sequenceTabKey = (s: SequenceSummary) => `sequence\u0000${s.schema ?? ""}\u0000${s.name}`;
+
+/** Objects whose definition is being fetched: a click meanwhile must not open a second tab. */
+const opening = new Set<string>();
+
+/**
+ * Opens an object's SQL (`load`) in a tab titled `name`, remembered by `key`. The tab it is
+ * already open in comes to the front instead (a sidebar click opens it, so clicking again must not
+ * stack copies); `newTab` (the menu's Open in New Tab) always opens another one.
+ */
+async function openObjectSql(
+  ctx: ObjectContext,
+  key: string,
+  name: string,
+  newTab: boolean,
+  load: () => Promise<string>,
+): Promise<string | null> {
+  if (!newTab && activateObjectTab(ctx.connectionId, key) !== null) {
+    showWorkspace();
+    return null;
+  }
+  // Only the reusing open is guarded: Open in New Tab asks for another copy, and must not clear
+  // the guard of a click whose definition is still loading.
+  const busy = newTab ? null : `${ctx.connectionId}\u0000${key}`;
+  if (busy !== null && opening.has(busy)) return null;
+  if (busy !== null) opening.add(busy);
   try {
     const dialect = requireSessionDialect(ctx);
-    const sql = await ipc.objects.routineDefinition(ctx.connectionId, routineRef(r));
-    const id = openSqlInNewQueryTab(ctx.connectionId, sql, dialect, r.name);
-    // ⌘S in this tab drops and recreates the routine (TablePlus), instead of saving a file.
-    markDefinition(id, { drop: routineRef(r) });
+    const id = openSqlInObjectTab(ctx.connectionId, key, await load(), dialect, name);
     showWorkspace();
+    return id;
   } catch (e) {
-    failed(`Could not open ${r.name}`, e);
+    failed(`Could not open ${name}`, e);
+    return null;
+  } finally {
+    if (busy !== null) opening.delete(busy);
   }
 }
 
-/** Opens a sequence's CREATE SEQUENCE text in a new SQL tab. */
-export async function openSequence(ctx: ObjectContext, s: SequenceSummary): Promise<void> {
-  try {
-    const dialect = requireSessionDialect(ctx);
-    const sql = await ipc.objects.sequenceDefinition(ctx.connectionId, refOf(s));
-    openSqlInNewQueryTab(ctx.connectionId, sql, dialect, s.name);
-    showWorkspace();
-  } catch (e) {
-    failed(`Could not open ${s.name}`, e);
-  }
+/** Opens a routine's definition in a SQL tab titled with its name (see `openObjectSql`). */
+export async function openRoutine(
+  ctx: ObjectContext,
+  r: RoutineSummary,
+  newTab = false,
+): Promise<void> {
+  const id = await openObjectSql(ctx, routineTabKey(r), r.name, newTab, () =>
+    ipc.objects.routineDefinition(ctx.connectionId, routineRef(r)),
+  );
+  // ⌘S in this tab drops and recreates the routine (TablePlus), instead of saving a file.
+  if (id !== null) markDefinition(id, { drop: routineRef(r) });
+}
+
+/** Opens a sequence's CREATE SEQUENCE text in a SQL tab (see `openObjectSql`). */
+export async function openSequence(
+  ctx: ObjectContext,
+  s: SequenceSummary,
+  newTab = false,
+): Promise<void> {
+  await openObjectSql(ctx, sequenceTabKey(s), s.name, newTab, () =>
+    ipc.objects.sequenceDefinition(ctx.connectionId, refOf(s)),
+  );
 }
 
 /** New ▸ View… / Function… …: a SQL tab with the template, its placeholder name selected. */

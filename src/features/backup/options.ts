@@ -455,11 +455,15 @@ export function formatElapsed(ms: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
 }
 
+// Paths come from the OS: Windows separates with "\" (and accepts "/"), so both count.
+
 export function basename(path: string): string {
-  return path.split("/").filter(Boolean).pop() ?? path;
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
 export function dirname(path: string): string | null {
-  const i = path.lastIndexOf("/");
-  return i > 0 ? path.slice(0, i) : null;
+  const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  if (i <= 0) return null;
+  // "C:\dump.sql" lives in "C:\", not in "C:" (the drive's current folder).
+  return /^[A-Za-z]:$/.test(path.slice(0, i)) ? path.slice(0, i + 1) : path.slice(0, i);
 }

@@ -6,6 +6,8 @@ import { KbdHint } from "@/components/KbdHint";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { actions } from "@/features/palette/actions";
 import { isTauri } from "@/lib/ipc";
+import { isWindows } from "@/lib/platform";
+import { cn } from "@/lib/utils";
 import { shortcutFor, useKeymapVersion } from "@/lib/keys/keymap";
 import { useConnectionsStore } from "@/stores/connections";
 import {
@@ -17,6 +19,7 @@ import {
   type TabGroup,
 } from "@/stores/tabs";
 import { groupDropId, onTabDragEnd, useTabSensors } from "./tabDrag";
+import { startTabRename } from "./renameStore";
 import { TabItem } from "./TabItem";
 import { wheelToScrollLeft } from "./wheel";
 
@@ -83,6 +86,13 @@ function BarButton({
   );
 }
 
+/** The element of the tab `id` in a tab list. */
+function tabElement(list: HTMLElement | null, id: string): HTMLElement | undefined {
+  return Array.from(list?.children ?? []).find(
+    (c): c is HTMLElement => c instanceof HTMLElement && c.dataset.tabId === id,
+  );
+}
+
 /** One group's tabs: sortable, and a drop target for tabs of the other group. */
 function TabList({ group, workspace }: { group: TabGroup; workspace: string | null }) {
   const allTabs = useTabsStore((s) => s.tabs);
@@ -105,13 +115,67 @@ function TabList({ group, workspace }: { group: TabGroup; workspace: string | nu
 
   // Keep the shown tab visible (new tabs, ⌘1…9, ⌃Tab, reopen).
   useEffect(() => {
-    const list = listRef.current;
-    if (!list || !shownId) return;
-    const el = Array.from(list.children).find(
-      (c): c is HTMLElement => c instanceof HTMLElement && c.dataset.tabId === shownId,
-    );
-    el?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
+    if (!shownId) return;
+    tabElement(listRef.current, shownId)?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
   }, [shownId, tabs.length]);
+
+  // Set when Delete closed the focused tab: the tab that shows next takes the keyboard focus.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    // Only when the closed tab took the focus with it.
+    const lost = !document.activeElement || document.activeElement === document.body;
+    if (lost && shownId) tabElement(listRef.current, shownId)?.focus();
+  }, [shownId, tabs]);
+
+  /**
+   * WAI-ARIA tabs on the focused tab only (never while focus is in the grid or the editor):
+   * ← → Home End show and focus another tab, Delete closes it, F2 renames it. The context menu
+   * (Shift+F10, the Menu key) comes from the browser's own contextmenu event on the focused tab.
+   */
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const el = e.target;
+    if (!(el instanceof HTMLElement) || el.getAttribute("role") !== "tab") return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const index = tabs.findIndex((t) => t.id === el.dataset.tabId);
+    const tab = tabs[index];
+    if (!tab) return;
+    let next: number;
+    switch (e.key) {
+      case "ArrowLeft":
+        next = (index - 1 + tabs.length) % tabs.length;
+        break;
+      case "ArrowRight":
+        next = (index + 1) % tabs.length;
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = tabs.length - 1;
+        break;
+      case "Delete":
+        e.preventDefault();
+        close(tab.id);
+        // Only a close that went through at once moves the focus (React renders after this
+        // handler). One waiting in the unsaved-work dialog leaves the focus to the dialog: an
+        // armed flag would otherwise pull the focus to the strip at some later, unrelated change.
+        refocus.current = !useTabsStore.getState().tabs.some((t) => t.id === tab.id);
+        return;
+      case "F2":
+        e.preventDefault();
+        startTabRename(tab.id);
+        return;
+      default:
+        return;
+    }
+    const target = tabs[next];
+    if (!target) return;
+    e.preventDefault();
+    activate(target.id);
+    tabElement(listRef.current, target.id)?.focus();
+  };
 
   const onWheel = (e: React.WheelEvent) => {
     const list = listRef.current;
@@ -131,6 +195,7 @@ function TabList({ group, workspace }: { group: TabGroup; workspace: string | nu
           role="tablist"
           aria-label={split ? (group === 0 ? "Left tab group" : "Right tab group") : "Open tabs"}
           data-tab-group={group}
+          onKeyDown={onKeyDown}
           className="flex h-full min-w-0 flex-1 [scrollbar-width:none] items-stretch overflow-x-auto overflow-y-hidden [&::-webkit-scrollbar]:hidden"
         >
           {tabs.map((t) => (
@@ -187,7 +252,13 @@ export function TabStrip({ group = 0, shared = false }: { group?: TabGroup; shar
       className="border-border bg-surface-2 flex h-8 shrink-0 items-stretch border-b"
     >
       {group === 0 && (
-        <div className="border-border flex shrink-0 items-center gap-1 border-r px-1">
+        // Windows (TablePlus) draws no dividers in the tab bar.
+        <div
+          className={cn(
+            "border-border flex shrink-0 items-center gap-1 px-1",
+            !isWindows && "border-r",
+          )}
+        >
           <BarButton
             label="Back"
             combo={shortcutFor("tab.back")}
@@ -213,7 +284,9 @@ export function TabStrip({ group = 0, shared = false }: { group?: TabGroup; shar
           {list}
         </DndContext>
       )}
-      <div className="border-border flex shrink-0 items-center border-l px-1">
+      <div
+        className={cn("border-border flex shrink-0 items-center px-1", !isWindows && "border-l")}
+      >
         <BarButton
           label="New query"
           combo={shortcutFor("tab.new-query")}

@@ -84,6 +84,12 @@ export const NO_LIMIT_MAX_ROWS = 1_000_000;
 /** The row limits the editor bar offers (null = no limit, the default of a new tab). */
 export const ROW_LIMITS: readonly (number | null)[] = [null, 100, 300, 500, 1_000, 10_000];
 
+/**
+ * How long a run or explain goes before its running time shows (editor bar, Plan header, the
+ * empty Messages pane): fast ones never flash a label.
+ */
+export const BUSY_LABEL_DELAY_MS = 1000;
+
 /** `maxRows` of a run for the tab's row limit. */
 export function maxRowsFor(limit: number | null): number {
   return limit === null ? NO_LIMIT_MAX_ROWS : Math.max(1, Math.min(limit, NO_LIMIT_MAX_ROWS));
@@ -244,7 +250,16 @@ export async function runQuery(
   if (replaced !== null && typeof target !== "object") {
     const lost = pendingForRun(useResultsStore.getState(), tabId, replaced);
     if (lost > 0) {
-      if (!(await confirmRerunDiscard(tabId, lost))) return;
+      const answer = await confirmRerunDiscard(tabId, lost);
+      if (answer === "commit") {
+        // ⌘S's commit, through its Preview sheet (it commits every pending change of the
+        // connection, so the user sees them all first); the run follows once it committed.
+        void commitWorkspace(info.connectionId, {
+          onCommitted: () => void runQuery(tabId, target, hooks),
+        });
+        return;
+      }
+      if (answer !== "discard") return;
       discardAgreed = true;
     }
   }
@@ -754,6 +769,18 @@ export function toggleResults(tabId: string, show?: boolean): void {
   updateQueryTab(tabId, (s) => ({
     resultsCollapsed: show === undefined ? !s.resultsCollapsed : !show,
   }));
+}
+
+/**
+ * The Plan tab's ×: drops the last explain (it stays through later runs otherwise, showing the
+ * plan of SQL that may have changed since). A running explain is canceled with Stop instead.
+ */
+export function closePlan(tabId: string): void {
+  updateQueryTab(tabId, (s) =>
+    !s.plan || s.plan.status === "running"
+      ? {}
+      : { plan: null, pane: s.pane === "plan" ? (s.run?.results[0]?.id ?? "messages") : s.pane },
+  );
 }
 
 /** Opens / closes the history sheet. */

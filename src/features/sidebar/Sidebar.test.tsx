@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { actions } from "@/features/palette/actions";
+import { closeObjectDialog, useObjectsStore } from "@/features/objects/store";
 import { usePaletteStore } from "@/features/palette/store";
 import { ipc, type ConnectionInfo, type Driver, type TableSummary } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
@@ -203,9 +204,58 @@ describe("Sidebar", () => {
     // Only focus moves: nothing opens until the user picks a table.
     expect(useTabsStore.getState().tabs).toEqual([]);
 
+    itemsSearch().focus();
     fireEvent.keyDown(itemsSearch(), { key: "Escape" });
     expect(itemsSearch()).toHaveValue("");
     expect(tableRow("posts")).toBeInTheDocument();
+    // The first Esc only clears, so the next search can be typed; Esc on an empty field leaves.
+    expect(itemsSearch()).toHaveFocus();
+    fireEvent.keyDown(itemsSearch(), { key: "Escape" });
+    expect(itemsSearch()).not.toHaveFocus();
+  });
+
+  it("Enter in the search opens the first match in a tab of its own", async () => {
+    renderSidebar();
+    await screen.findByRole("button", { name: /^Tables/ });
+    fireEvent.change(itemsSearch(), { target: { value: "user" } });
+    fireEvent.keyDown(itemsSearch(), { key: "Enter" });
+    expect(useTabsStore.getState().tabs).toEqual([
+      expect.objectContaining({ kind: "table", table: { schema: "public", name: "users" } }),
+    ]);
+    expect(useTabsStore.getState().tabs[0]).not.toMatchObject({ preview: true });
+  });
+
+  it("offers Search in Database… when the search matches nothing", async () => {
+    renderSidebar();
+    await screen.findByRole("button", { name: /^Tables/ });
+    fireEvent.change(itemsSearch(), { target: { value: "zzz" } });
+    expect(screen.getByText("No matches")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Search in Database…" }));
+    expect(usePaletteStore.getState()).toMatchObject({
+      open: true,
+      mode: "objects",
+      initialQuery: "zzz",
+    });
+    act(() => usePaletteStore.getState().setOpen(false));
+  });
+
+  it("offers New Table… in an empty schema", async () => {
+    vi.spyOn(ipc.schema, "tables").mockResolvedValue([]);
+    renderSidebar();
+    expect(await screen.findByText("No tables")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "New Table…" }));
+    expect(useObjectsStore.getState().dialog?.dialog).toMatchObject({ kind: "createTable" });
+    act(() => closeObjectDialog());
+  });
+
+  it("Retry loads the tree again after an error", async () => {
+    vi.spyOn(ipc.schema, "schemas")
+      .mockRejectedValueOnce(new Error("connection reset"))
+      .mockResolvedValue([{ name: "public", isDefault: true }]);
+    renderSidebar();
+    expect(await screen.findByText("connection reset")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("button", { name: /^Tables/ })).toBeInTheDocument();
   });
 
   it("hides Recent and the row counts by default; ⚙ turns them on", async () => {

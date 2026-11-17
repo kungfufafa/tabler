@@ -28,6 +28,9 @@ export const INDENT_PX = 16;
  * header to move it there. Inside nested groups it is indented by its group's level; search
  * results show the group path as a breadcrumb instead.
  *
+ * The "…" button stays hidden until the row is hovered or selected, so the list reads as quietly
+ * as TablePlus's; the detail line uses the UI font with tabular figures (ports line up).
+ *
  * The selected row uses a neutral fill until focus enters the connection pane. A ring marks the
  * current row while navigating with the keyboard, including before the first selection.
  */
@@ -79,7 +82,7 @@ export function ConnectionRow({
           }
           style={indent > 0 ? { marginLeft: indent * INDENT_PX } : undefined}
           className={cn(
-            "relative flex h-12 items-center gap-2 rounded-md px-2",
+            "group/row relative flex h-12 items-center gap-2 rounded-md px-2",
             selected
               ? [
                   "bg-accent group-focus-within/pane:bg-brand-soft group-focus-within/pane:before:bg-brand",
@@ -123,7 +126,7 @@ export function ConnectionRow({
                 />
               )}
             </div>
-            <div className="text-muted-foreground mt-0.5 flex min-w-0 items-center gap-1 font-mono text-[12px] leading-4">
+            <div className="text-muted-foreground mt-0.5 flex min-w-0 items-center gap-1 text-[12px] leading-4 tabular-nums">
               {profile.ssh && (
                 <Network className="size-3 shrink-0" aria-label="Over SSH" role="img" />
               )}
@@ -150,7 +153,13 @@ export function ConnectionRow({
                 variant="ghost"
                 size="icon-sm"
                 tabIndex={-1}
-                className="text-muted-foreground"
+                // Quiet like TablePlus's rows (no per-row buttons): it shows on hover, on the
+                // selected row and while its menu is open. Right-click offers the same menu.
+                className={cn(
+                  "text-muted-foreground transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 motion-reduce:transition-none",
+                  selected ? "opacity-100" : "opacity-0",
+                )}
+                title="Connection actions"
                 onDoubleClick={(e) => e.stopPropagation()}
                 // A press on "…" must not start dragging the row.
                 onPointerDown={(e) => e.stopPropagation()}

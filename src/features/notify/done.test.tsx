@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { REVEAL_LABEL } from "@/lib/platform";
 import { DEFAULT_PREFS, resetPrefsForTests } from "@/stores/prefs";
 import { announceFileDone, resetDoneStore, useDoneStore } from "./done";
 import { NotifyHost } from "./NotifyHost";
@@ -33,19 +34,19 @@ describe("announceFileDone", () => {
     expect(within(popup).getByText("Exported 3 rows")).toBeInTheDocument();
     expect(within(popup).getByText("users.csv · 1 KB · 0.1 s")).toBeInTheDocument();
     expect(toast.success).not.toHaveBeenCalled();
-    // Show in Finder closes it too (the browser mock reveals nothing).
-    await user.click(within(popup).getByRole("button", { name: "Show in Finder" }));
+    // The reveal button closes it too (the browser mock reveals nothing).
+    await user.click(within(popup).getByRole("button", { name: REVEAL_LABEL }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(useDoneStore.getState().shown).toBeNull();
   });
 
-  it("is a toast with Show in Finder when the preference is off, or nothing to show", () => {
+  it("is a toast with the reveal action when the preference is off, or nothing to show", () => {
     resetPrefsForTests({ ...DEFAULT_PREFS, exportRevealPopup: false });
     announceFileDone(notice);
     expect(useDoneStore.getState().shown).toBeNull();
     expect(toast.success).toHaveBeenCalledWith("Exported 3 rows", {
       description: notice.description,
-      action: { label: "Show in Finder", onClick: expect.any(Function) },
+      action: { label: REVEAL_LABEL, onClick: expect.any(Function) },
     });
     resetPrefsForTests(DEFAULT_PREFS);
     announceFileDone({ ...notice, path: null });

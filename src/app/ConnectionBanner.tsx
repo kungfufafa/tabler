@@ -8,6 +8,7 @@ import {
 } from "@/hooks/useConnectionEvents";
 import { cn } from "@/lib/utils";
 import { useActiveConnection } from "@/stores/connections";
+import { ToolbarTip } from "./ToolbarButton";
 
 /**
  * Warning amber mixed toward the foreground so it stays legible on the tinted bar: ≥ 7.5:1 in light
@@ -58,20 +59,28 @@ export function ConnectionBanner() {
           {state.message}
         </span>
       )}
-      <Button
-        variant="outline"
-        size="xs"
-        className={cn(
-          "border-warning/40 hover:bg-warning/15 dark:border-warning/40 dark:hover:bg-warning/15 ml-auto h-5 shrink-0 bg-transparent dark:bg-transparent",
-          TEXT,
-          "hover:text-[color-mix(in_oklab,var(--warning)_40%,var(--foreground))] dark:hover:text-[color-mix(in_oklab,var(--warning)_65%,var(--foreground))]",
-        )}
-        disabled={!state.canReconnect}
-        onClick={() => void reconnectConnection(connectionId, qc)}
+      {/* Wrapped: the tooltip (with ⇧⌘R) still shows while an attempt runs and the button is off. */}
+      <ToolbarTip
+        label="Reconnect"
+        action="connection.reconnect"
+        wrap
+        wrapClassName="ml-auto shrink-0"
       >
-        <RotateCw />
-        Reconnect
-      </Button>
+        <Button
+          variant="outline"
+          size="xs"
+          className={cn(
+            "border-warning/40 hover:bg-warning/15 dark:border-warning/40 dark:hover:bg-warning/15 h-5 shrink-0 bg-transparent dark:bg-transparent",
+            TEXT,
+            "hover:text-[color-mix(in_oklab,var(--warning)_40%,var(--foreground))] dark:hover:text-[color-mix(in_oklab,var(--warning)_65%,var(--foreground))]",
+          )}
+          disabled={!state.canReconnect}
+          onClick={() => void reconnectConnection(connectionId, qc)}
+        >
+          <RotateCw />
+          {state.canReconnect ? "Reconnect" : "Reconnecting…"}
+        </Button>
+      </ToolbarTip>
     </div>
   );
 }

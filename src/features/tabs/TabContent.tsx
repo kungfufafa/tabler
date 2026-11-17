@@ -5,29 +5,52 @@ import { LacksFieldsContext } from "@/features/datagrid/lacksFields";
 import { rowsCanLackFields } from "@/features/drivers/catalog";
 import { useDriverUi } from "@/features/drivers/registry";
 import { QueryTab } from "@/features/editor/QueryTab";
-import { ActionsEnabledContext } from "@/features/palette/actions";
+import { actions, ActionsEnabledContext, type ActionId } from "@/features/palette/actions";
 import { StructureTab } from "@/features/structure/StructureTab";
 import { BottomBarFrame } from "@/features/table-tab/BarParts";
 import { TableTab } from "@/features/table-tab/TableTab";
 import { capsOf } from "@/lib/caps";
-import { shortcutFor } from "@/lib/keys/keymap";
+import { shortcutFor, useKeymapVersion } from "@/lib/keys/keymap";
 import { useConnectionsStore } from "@/stores/connections";
 import { useActiveTab, useTabsStore, type Tab, type TabGroup } from "@/stores/tabs";
+import { useUiStore } from "@/stores/ui";
 import { getToolTab } from "./toolTabs";
 import { ViewSwitch } from "./ViewSwitch";
 
-/** The connected workspace before any table opens (TablePlus shows a single centred hint). */
+/** One of the empty workspace's actions, with its (possibly remapped) shortcut. */
+function HintAction({ id, label }: { id: ActionId; label: string }) {
+  const combo = shortcutFor(id);
+  return (
+    <button
+      type="button"
+      onClick={() => void actions.run(id)}
+      className="hover:bg-accent hover:text-foreground focus-visible:ring-ring flex h-7 items-center gap-2 rounded-md px-2 transition-colors outline-none focus-visible:ring-1"
+    >
+      {label}
+      {combo && <Kbd combo={combo} />}
+    </button>
+  );
+}
+
+/**
+ * The connected workspace before any table opens. TablePlus leaves the centre blank; a short hint
+ * with the ways in is friendlier, and only points at the sidebar while the sidebar shows.
+ */
 function WorkspaceHint() {
-  const openAnything = shortcutFor("palette.open") ?? "Mod+P";
+  const sidebarOpen = useUiStore((s) => s.sidebarOpen);
+  // The shortcuts shown are the current (possibly remapped) ones.
+  useKeymapVersion();
   return (
     <div
       data-slot="workspace-hint"
-      className="text-muted-foreground flex h-full items-center justify-center p-6 text-center text-xs"
+      className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-xs"
     >
-      <p>
-        Select an item in the sidebar, or press{" "}
-        <Kbd combo={openAnything} className="mx-0.5 align-middle" /> to open anything
-      </p>
+      <p>{sidebarOpen ? "Select an item in the sidebar, or:" : "Nothing is open yet."}</p>
+      <div className="flex flex-wrap items-center justify-center gap-1">
+        <HintAction id="palette.open" label="Open anything" />
+        <HintAction id="tab.new-query" label="New query" />
+        {!sidebarOpen && <HintAction id="ui.toggle-sidebar" label="Show sidebar" />}
+      </div>
     </div>
   );
 }

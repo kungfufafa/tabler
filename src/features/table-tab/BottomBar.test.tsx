@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { tableMetaFor } from "@/lib/ipc/mock/fixtures";
@@ -178,6 +178,63 @@ describe("TableBottomBar", () => {
     expect(onToggleColumn).toHaveBeenCalledWith("email", false);
     fireEvent.click(screen.getByRole("button", { name: "Show All" }));
     expect(onShowAllColumns).toHaveBeenCalledOnce();
+  });
+
+  it("[Columns] keeps the last visible column (its box cannot be unchecked)", () => {
+    const keep = columns[0]!.name;
+    const { onToggleColumn } = mount({
+      hidden: columns.slice(1).map((c) => c.name),
+      columnsOpen: true,
+    });
+    const last = screen.getByRole("menuitemcheckbox", { name: keep });
+    expect(last).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(last);
+    expect(onToggleColumn).not.toHaveBeenCalled();
+    // The hidden ones can still be checked again.
+    expect(screen.getByRole("menuitemcheckbox", { name: columns[1]!.name })).not.toHaveAttribute(
+      "aria-disabled",
+    );
+  });
+
+  it("[Columns] offers a search field for a wide table only", () => {
+    mount({ columns: columns.slice(0, 5), columnsOpen: true });
+    expect(screen.queryByRole("textbox", { name: "Search columns" })).toBeNull();
+  });
+
+  it("[Columns] filters a wide table's columns by the search text", () => {
+    const wide = Array.from({ length: 20 }, (_, i) => ({ ...columns[0]!, name: `col_${i}` }));
+    mount({ columns: wide, columnsOpen: true });
+    const search = screen.getByRole("textbox", { name: "Search columns" });
+    fireEvent.change(search, { target: { value: "COL_1" } });
+    const names = screen.getAllByRole("menuitemcheckbox").map((i) => i.textContent);
+    expect(names).toEqual(["col_1", ...Array.from({ length: 10 }, (_, i) => `col_1${i}`)]);
+    fireEvent.change(search, { target: { value: "nope" } });
+    expect(screen.queryAllByRole("menuitemcheckbox")).toEqual([]);
+    expect(screen.getByText("No matching columns")).toBeInTheDocument();
+  });
+
+  it("shows why a read-only table cannot be edited, before any edit is tried", async () => {
+    const { rerender } = mount();
+    expect(screen.queryByTestId("read-only")).toBeNull();
+    rerender({ readOnlyReason: "Read-only: this is a view, so its rows cannot be edited here" });
+    const label = screen.getByRole("note", {
+      name: "Read-only: this is a view, so its rows cannot be edited here",
+    });
+    fireEvent.focus(label);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("this is a view");
+  });
+
+  it("says Loading… in the summary only once a page load is slow", async () => {
+    vi.useFakeTimers();
+    try {
+      mount({ loading: true });
+      expect(within(summary()).getByRole("status")).toHaveClass("sr-only");
+      act(() => vi.advanceTimersByTime(450));
+      expect(within(summary()).getByRole("status")).not.toHaveClass("sr-only");
+      expect(summary()).toHaveTextContent("Loading…");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("asks for the Columns menu to open (⌥⌘F opens it the same way)", () => {

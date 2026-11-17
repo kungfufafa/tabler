@@ -418,7 +418,9 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
             onCheckedChange={(v) => setKeys([t.key], v === true)}
           />
           <Icon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
-          <span className="truncate font-mono">{label}</span>
+          <span className="truncate font-mono" title={label}>
+            {label}
+          </span>
           {t.summary.rowEstimate !== null && (
             <span className="text-muted-foreground ml-auto shrink-0 tabular-nums">
               ~{formatCount(t.summary.rowEstimate)}
@@ -442,7 +444,9 @@ export function TablesExportForm({ target }: { target: OpenExportArgs }) {
       >
         {q?.isPending && (
           <li>
-            <QuietStatus>Loading tables</QuietStatus>
+            <QuietStatus delay={400} className={cn("block", leveled ? "pl-8" : "pl-3")}>
+              Loading tables
+            </QuietStatus>
           </li>
         )}
         {q?.isError && (

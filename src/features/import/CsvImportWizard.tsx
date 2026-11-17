@@ -31,6 +31,7 @@ import { guardExecution } from "@/features/safety/guard";
 import { useCurrentSchema, useTables } from "@/features/sidebar/useSchemaTree";
 import { invalidateSchema } from "@/features/structure/invalidate";
 import { rowKeys } from "@/features/table-tab/useTableRows";
+import { useDirtyDialogGuard } from "@/hooks/useDirtyDialogGuard";
 import {
   ipc,
   toIpcError,
@@ -52,6 +53,7 @@ import {
   COLUMN_TYPES,
   DELIMITERS,
   ENCODINGS,
+  fileNameOf,
   INSERT_MODES,
   insertModesFor,
   loadCsvPrefs,
@@ -198,9 +200,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
   const [strategy, setStrategy] = useState<MatchStrategy>(prefs.strategy);
   const [creating, setCreating] = useState(false);
   const [tableName, setTableName] = useState<string | null>(request.table?.name ?? null);
-  const [newName, setNewName] = useState(() =>
-    tableNameFromFile(path.slice(path.lastIndexOf("/") + 1)),
-  );
+  const [newName, setNewName] = useState(() => tableNameFromFile(fileNameOf(path)));
   const [mode, setMode] = useState<InsertMode>("stopOnError");
   const [overrides, setOverrides] = useState<Record<number, string | null>>({});
   const [defs, setDefs] = useState<ImportColumnDef[] | null>(null);
@@ -211,6 +211,24 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
   // Set before the safety guard is awaited: a second ⌘↩ or click meanwhile does not start twice.
   const starting = useRef(false);
   const [guarding, setGuarding] = useState(false);
+  // Set by the user's own choices only (not by detection or the first table picked), so a quick
+  // look still closes with one Escape while hand-made mappings are not thrown away by accident.
+  const [edited, setEdited] = useState(false);
+  const edit =
+    <A extends unknown[]>(fn: (...args: A) => void) =>
+    (...args: A) => {
+      setEdited(true);
+      fn(...args);
+    };
+  const nameInput = useRef<HTMLInputElement>(null);
+  // "Create new table" swaps the table menu for the name field: the user types the name next.
+  const focusName = useRef(false);
+  useEffect(() => {
+    if (!creating || !focusName.current) return;
+    focusName.current = false;
+    nameInput.current?.focus();
+    nameInput.current?.select();
+  }, [creating]);
 
   const preview = useQuery({
     queryKey: json ? ["jsonPreview", path, format.encoding] : ["csvPreview", path, format],
@@ -314,6 +332,13 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
   const close = () => {
     if (!running) closeImport();
   };
+  // Escape, a click outside and ✕ ask first once settings were changed; the Cancel button is an
+  // explicit choice and still closes at once.
+  const guard = useDirtyDialogGuard({
+    dirty: edited && !running,
+    onClose: close,
+    what: "the import settings",
+  });
 
   const start = async () => {
     if (!canImport || !data || starting.current) return;
@@ -452,12 +477,15 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
   const width = Math.max(csvNames.length, ...(data?.rows ?? []).map((r) => r.length));
 
   return (
-    <Dialog open onOpenChange={(open) => !open && close()}>
+    <Dialog open onOpenChange={guard.onOpenChange}>
       <DialogContent
         className="flex max-h-[min(760px,calc(100dvh-4rem))] flex-col gap-0 p-0 sm:max-w-[min(980px,calc(100%-2rem))]"
         showCloseButton={!running}
         onInteractOutside={(e) => running && e.preventDefault()}
-        onEscapeKeyDown={(e) => running && e.preventDefault()}
+        onEscapeKeyDown={(e) => {
+          if (running) e.preventDefault();
+          else guard.contentProps.onEscapeKeyDown(e);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
@@ -472,7 +500,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
           </DialogTitle>
           <DialogDescription className="flex min-w-0 items-center gap-1.5 text-xs">
             <span className="text-foreground truncate font-mono" title={path}>
-              {data?.fileName ?? path.slice(path.lastIndexOf("/") + 1)}
+              {data?.fileName ?? fileNameOf(path)}
             </span>
             {data && <span className="shrink-0">· {formatBytes(data.size)}</span>}
             {json && layoutLabel(data?.layout ?? null) && (
@@ -495,9 +523,13 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
             <Field label="Table">
               {creating ? (
                 <Input
+                  ref={nameInput}
                   aria-label="New table name"
                   value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
+                  onChange={(e) => {
+                    setEdited(true);
+                    setNewName(e.target.value);
+                  }}
                   spellCheck={false}
                   autoComplete="off"
                   className="h-7 min-w-0 flex-1 rounded-md font-mono text-xs md:text-xs"
@@ -506,6 +538,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                 <Select
                   value={tableName ?? undefined}
                   onValueChange={(v) => {
+                    setEdited(true);
                     setTableName(v);
                     setOverrides({});
                   }}
@@ -526,7 +559,13 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                   </SelectContent>
                 </Select>
               )}
-              <Toggle checked={creating} onChange={setCreating}>
+              <Toggle
+                checked={creating}
+                onChange={edit((on: boolean) => {
+                  focusName.current = on;
+                  setCreating(on);
+                })}
+              >
                 Create new table
               </Toggle>
             </Field>
@@ -535,10 +574,10 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                 label="Matching strategy"
                 value={strategy}
                 options={MATCH_STRATEGIES}
-                onChange={(v) => {
+                onChange={edit((v: MatchStrategy) => {
                   setStrategy(v);
                   setOverrides({});
-                }}
+                })}
                 disabled={creating}
                 className="min-w-0 flex-1"
               />
@@ -548,7 +587,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                 label="Insert option"
                 value={effectiveMode}
                 options={INSERT_MODES.filter((m) => modes.includes(m.value))}
-                onChange={setMode}
+                onChange={edit(setMode)}
                 disabled={modes.length === 1}
                 className="w-52"
               />
@@ -563,11 +602,11 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
               <div className="flex flex-wrap items-center gap-x-4">
                 <Toggle
                   checked={format.header}
-                  onChange={(header) => setFormat((f) => ({ ...f, header }))}
+                  onChange={edit((header: boolean) => setFormat((f) => ({ ...f, header })))}
                 >
                   First line is header
                 </Toggle>
-                <Toggle checked={emptyAsNull} onChange={setEmptyAsNull}>
+                <Toggle checked={emptyAsNull} onChange={edit(setEmptyAsNull)}>
                   Empty unquoted field as NULL
                 </Toggle>
               </div>
@@ -578,7 +617,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                   label="Delimiter"
                   value={format.delimiter ?? data?.delimiter ?? ","}
                   options={DELIMITERS}
-                  onChange={(delimiter) => setFormat((f) => ({ ...f, delimiter }))}
+                  onChange={edit((delimiter: string) => setFormat((f) => ({ ...f, delimiter })))}
                   className="w-36"
                 />
                 <span className="text-muted-foreground text-xs">Quote</span>
@@ -586,7 +625,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                   label="Quote"
                   value={format.quote}
                   options={QUOTES}
-                  onChange={(quote) => setFormat((f) => ({ ...f, quote }))}
+                  onChange={edit((quote: string) => setFormat((f) => ({ ...f, quote })))}
                   className="w-40"
                 />
               </Field>
@@ -596,7 +635,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                 label="Encoding"
                 value={format.encoding ?? data?.encoding ?? "utf8"}
                 options={ENCODINGS}
-                onChange={(encoding) => setFormat((f) => ({ ...f, encoding }))}
+                onChange={edit((encoding: TextEncoding) => setFormat((f) => ({ ...f, encoding })))}
                 className="w-48"
               />
             </Field>
@@ -607,7 +646,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
           {preview.isError ? (
             <FormError className="p-4">{preview.error.message}</FormError>
           ) : !data ? (
-            <QuietStatus>Reading the file</QuietStatus>
+            <QuietStatus delay={400}>Reading the file</QuietStatus>
           ) : (
             <table className="w-max min-w-full border-separate border-spacing-0 text-xs">
               <thead className="bg-surface sticky top-0 z-10">
@@ -625,28 +664,29 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                               aria-label={`Import column ${i + 1}`}
                               checked={!skipped.has(i)}
                               disabled={running || defs?.[i] === undefined}
-                              onCheckedChange={(v) =>
+                              onCheckedChange={edit((v: boolean | "indeterminate") =>
                                 setSkipped((s) => {
                                   const next = new Set(s);
                                   if (v === true) next.delete(i);
                                   else next.add(i);
                                   return next;
-                                })
-                              }
+                                }),
+                              )}
                             />
                             <Input
                               aria-label={`Name of column ${i + 1}`}
                               value={defs?.[i]?.name ?? ""}
                               disabled={running || skipped.has(i) || defs?.[i] === undefined}
-                              onChange={(e) =>
+                              onChange={(e) => {
+                                setEdited(true);
                                 setDefs((d) =>
                                   d
                                     ? d.map((c, j) =>
                                         j === i ? { ...c, name: e.target.value } : c,
                                       )
                                     : d,
-                                )
-                              }
+                                );
+                              }}
                               spellCheck={false}
                               className="h-6 min-w-0 flex-1 rounded-md font-mono text-xs md:text-xs"
                             />
@@ -656,11 +696,11 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                             value={defs?.[i]?.ty ?? "text"}
                             options={COLUMN_TYPES}
                             disabled={running || skipped.has(i) || defs?.[i] === undefined}
-                            onChange={(ty) =>
+                            onChange={edit((ty: ImportType) =>
                               setDefs((d) =>
                                 d ? d.map((c, j) => (j === i ? { ...c, ty } : c)) : d,
-                              )
-                            }
+                              ),
+                            )}
                             className="h-6 w-full font-mono"
                           />
                         </div>
@@ -668,9 +708,9 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                         <Select
                           value={mapping[i] ?? SKIP}
                           disabled={running || i >= csvNames.length}
-                          onValueChange={(v) =>
-                            setOverrides((o) => ({ ...o, [i]: v === SKIP ? null : v }))
-                          }
+                          onValueChange={edit((v: string) =>
+                            setOverrides((o) => ({ ...o, [i]: v === SKIP ? null : v })),
+                          )}
                         >
                           <SelectTrigger
                             size="sm"
@@ -755,8 +795,13 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
                   </span>
                 </div>
                 <div className="bg-surface-2 h-1 w-56 overflow-hidden rounded-full">
+                  {/* Before the first progress event the size read is not known yet: a pulsing
+                      partial fill says the import is under way rather than an empty, stuck bar. */}
                   <div
-                    className={cn("bg-brand h-full rounded-full", pct === null && "w-0")}
+                    className={cn(
+                      "bg-brand h-full rounded-full",
+                      pct === null && "w-1/3 animate-pulse",
+                    )}
                     style={pct === null ? undefined : { width: `${pct}%` }}
                   />
                 </div>
@@ -811,6 +856,7 @@ export function CsvImportWizard({ request, path }: { request: ImportRequest; pat
           )}
         </DialogFooter>
       </DialogContent>
+      {guard.confirm}
     </Dialog>
   );
 }

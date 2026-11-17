@@ -5,6 +5,7 @@ import { QuietStatus } from "@/components/QuietLoading";
 import { useLacksFields } from "@/features/datagrid/lacksFields";
 import { formatDuration } from "@/lib/format/time";
 import { cn } from "@/lib/utils";
+import { BUSY_LABEL_DELAY_MS } from "./controller";
 import { locateSubmitted } from "./submissions";
 import { focusEditor } from "./editorStates";
 import { ErrorBlock } from "./ErrorBlock";
@@ -26,6 +27,14 @@ import { resultData } from "@/stores/resultData";
 export const VIRTUALIZE_FROM = 200;
 const ROW_ESTIMATE = 29;
 const ROW_CLASS = "border-gridline border-b px-3 py-1.5";
+
+/** Characters of a statement its row's tooltip shows (the row itself shows its first line). */
+const SQL_TITLE_MAX = 600;
+
+/** The statement's SQL for its tooltip, so a long or multi-line one can be read in the log. */
+function sqlTitle(sql: string): string {
+  return sql.length > SQL_TITLE_MAX ? `${sql.slice(0, SQL_TITLE_MAX)}…` : sql;
+}
 
 function StatusIcon({ status }: { status: StatementStatus }) {
   switch (status) {
@@ -135,7 +144,9 @@ const StatementRow = memo(function StatementRow({
         <span className="text-muted-foreground w-5 shrink-0 text-right tabular-nums">
           {st.index + 1}
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono">{firstLine(st.sql)}</span>
+        <span className="min-w-0 flex-1 truncate font-mono" title={sqlTitle(st.sql)}>
+          {firstLine(st.sql)}
+        </span>
         <span
           className={cn(
             "shrink-0 tabular-nums",
@@ -307,7 +318,11 @@ export function MessagesView({ tabId, run }: { tabId: string; run: RunState }) {
           )}
         </div>
       )}
-      {waiting && <QuietStatus>Waiting for the server</QuietStatus>}
+      {waiting && (
+        <QuietStatus delay={BUSY_LABEL_DELAY_MS} className="px-3 py-1.5">
+          Waiting for the server
+        </QuietStatus>
+      )}
       {extra > 0 && (
         <div
           className="border-gridline bg-surface-2 text-muted-foreground flex min-h-6 shrink-0 items-center gap-1.5 border-b px-3 py-1"

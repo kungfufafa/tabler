@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { openConnectionDialog } from "@/features/connections/store";
 import { profileKeys, useProfiles } from "@/features/connections/useConnections";
+import { driverLabel } from "@/features/drivers/catalog";
 import { actions } from "@/features/palette/actions";
 import {
   effectiveLevel,
@@ -46,7 +47,7 @@ import {
 } from "@/features/safety/levels";
 import { changeSafeModeLevel } from "@/features/safety/setLevel";
 import { useWindowFullscreen } from "@/hooks/useWindowFullscreen";
-import { toIpcError, type ConnectionProfile, type SafeModeLevel } from "@/lib/ipc";
+import { toIpcError, type ConnectionProfile, type Driver, type SafeModeLevel } from "@/lib/ipc";
 import { has } from "@/lib/caps";
 import { cn } from "@/lib/utils";
 import { useActiveConnection } from "@/stores/connections";
@@ -56,7 +57,7 @@ import { CustomizeToolbarDialog } from "./CustomizeToolbar";
 import { PanelToggles } from "./PanelToggles";
 import { StatusPill } from "./StatusPill";
 import { overlayTitleBar, ownTitleBar } from "./titleBar";
-import { ToolbarButton, ToolbarTip } from "./ToolbarButton";
+import { ToolbarButton, ToolbarGroup, ToolbarTip } from "./ToolbarButton";
 import { useActionAvailable } from "./useActionAvailable";
 import { AppMenuButton, WindowControls } from "./WindowControls";
 import {
@@ -68,6 +69,14 @@ import {
   type ToolbarDisplay,
   type ToolbarItemId,
 } from "./toolbarLayout";
+
+/** Why a connection's toolbar buttons are greyed out without one. */
+const NO_CONNECTION = "No connection";
+
+/** Why User Management / Metrics Board are greyed out for this connection. */
+function unsupportedReason(driver: Driver): string {
+  return `Not supported by ${driverLabel(driver)}`;
+}
 
 /** The lock's icon: open = Silent, closed = Alert Mode 1 / 2, keyhole (accent) = Safe Mode 1 / 2. */
 function levelIcon(level: SafeModeLevel): LucideIcon {
@@ -103,6 +112,9 @@ function SafeModeLock() {
           list?.map((p) => (p.id === saved.id ? saved : p)),
         );
         void qc.invalidateQueries({ queryKey: profileKeys.all });
+        // The menu closes and only the small lock icon changes: say what the connection is now
+        // set to, a risky setting worth a confirmation.
+        toast.success(`Safe mode: ${SAFE_MODE_LABEL[next]}`, { description: saved.name });
       }
     } catch (err) {
       toast.error("Could not change the safe mode", { description: toIpcError(err).message });
@@ -116,11 +128,14 @@ function SafeModeLock() {
     openedDialog.current = true;
     openConnectionDialog(profile);
   };
-  // While open the trigger is styled from `aria-expanded`: its `data-state` is the tooltip's.
+  // While open the trigger is styled from `aria-expanded`. The tooltip hangs on a span around it,
+  // so it still says what the lock is while it is greyed out (no connection).
   return (
     <DropdownMenu>
       <ToolbarTip
         label={readOnly ? `${safeModeText(level)} · Read-only connection` : safeModeText(level)}
+        disabledReason={active ? undefined : NO_CONNECTION}
+        wrap
       >
         <DropdownMenuTrigger asChild>
           <Button
@@ -213,11 +228,17 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
       return <SafeModeLock />;
     case "databases":
       return (
-        <div className="flex items-center gap-1">
+        // Always in a capsule (`GROUPED`): spaced like its other buttons.
+        <div className="flex items-center gap-0.5">
           <ToolbarButton label="Open database" action="palette.databases" text={caption}>
             <Database className="size-3.5" />
           </ToolbarButton>
-          <ToolbarTip label="New query" action="tab.new-query">
+          <ToolbarTip
+            label="New query"
+            action="tab.new-query"
+            disabledReason={hasConnection ? undefined : NO_CONNECTION}
+            wrap
+          >
             <Button
               variant="ghost"
               size="sm"
@@ -261,6 +282,7 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
           action="admin.users"
           text={caption}
           disabled={!active || active.info.driver === "sqlite" || !has(active.info, "users")}
+          disabledReason={active ? unsupportedReason(active.info.driver) : NO_CONNECTION}
         >
           <UserCog className="size-3.5" />
         </ToolbarButton>
@@ -274,6 +296,7 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
             action="metrics.open"
             text={caption}
             disabled={!hasConnection || (!!active && !has(active.info, "metrics"))}
+            disabledReason={active ? unsupportedReason(active.info.driver) : NO_CONNECTION}
           >
             <Gauge className="size-3.5" />
           </ToolbarButton>
@@ -294,9 +317,32 @@ function ToolbarItem({ id, text }: { id: ToolbarItemId; text: boolean }) {
   }
 }
 
+/** What a toolbar side shows: its items, and on Windows the ⋮ app menu among them. */
+type Entry = ToolbarItemId | "appMenu";
+
+/**
+ * The entries that share a capsule with their neighbours, as TablePlus draws each cluster
+ * ([sidebar ⋮], [lock Databases SQL], [Metrics Refresh Open Anything]). The action control and
+ * the panel switches are capsules of their own; the pill and the spaces sit outside any.
+ */
+const GROUPED: ReadonlySet<Entry> = new Set<Entry>([
+  "sidebar",
+  "appMenu",
+  "safeMode",
+  "databases",
+  "refresh",
+  "openAnything",
+  "workspaces",
+  "users",
+  "metrics",
+]);
+
+/** The items that give way in a narrow window (`@max-3xl/toolbar:hidden` on their own). */
+const NARROW_HIDDEN: ReadonlySet<Entry> = new Set<Entry>(["metrics", "openAnything"]);
+
 /** Occurrence-numbered keys: spaces may repeat. */
-function itemKeys(items: readonly ToolbarItemId[]): string[] {
-  const seen = new Map<ToolbarItemId, number>();
+function itemKeys(items: readonly Entry[]): string[] {
+  const seen = new Map<Entry, number>();
   return items.map((id) => {
     const n = seen.get(id) ?? 0;
     seen.set(id, n + 1);
@@ -304,9 +350,37 @@ function itemKeys(items: readonly ToolbarItemId[]): string[] {
   });
 }
 
-function Items({ items, text }: { items: readonly ToolbarItemId[]; text: boolean }): ReactNode {
+function EntryItem({ id, text }: { id: Entry; text: boolean }) {
+  return id === "appMenu" ? <AppMenuButton /> : <ToolbarItem id={id} text={text} />;
+}
+
+/** The entries in order, each run of adjacent groupable ones in one capsule. */
+function Items({ items, text }: { items: readonly Entry[]; text: boolean }): ReactNode {
   const keys = itemKeys(items);
-  return items.map((id, i) => <ToolbarItem key={keys[i]} id={id} text={text} />);
+  const out: ReactNode[] = [];
+  for (let i = 0; i < items.length;) {
+    if (!GROUPED.has(items[i]!)) {
+      out.push(<EntryItem key={keys[i]} id={items[i]!} text={text} />);
+      i++;
+      continue;
+    }
+    let end = i;
+    while (end < items.length && GROUPED.has(items[end]!)) end++;
+    const run = items.slice(i, end);
+    out.push(
+      <ToolbarGroup
+        key={`group:${keys[i]}`}
+        // A capsule of items that all give way in a narrow window goes with them: no empty pill.
+        className={cn(run.every((id) => NARROW_HIDDEN.has(id)) && "@max-3xl/toolbar:hidden")}
+      >
+        {run.map((id, k) => (
+          <EntryItem key={keys[i + k]} id={id} text={text} />
+        ))}
+      </ToolbarGroup>,
+    );
+    i = end;
+  }
+  return out;
 }
 
 /**
@@ -315,14 +389,9 @@ function Items({ items, text }: { items: readonly ToolbarItemId[]; text: boolean
  */
 function LeftItems({ items, text }: { items: readonly ToolbarItemId[]; text: boolean }) {
   if (!ownTitleBar) return <Items items={items} text={text} />;
-  const afterSidebar = items[0] === "sidebar";
-  return (
-    <>
-      {afterSidebar && <ToolbarItem id="sidebar" text={text} />}
-      <AppMenuButton />
-      <Items items={afterSidebar ? items.slice(1) : items} text={text} />
-    </>
-  );
+  const entries: Entry[] =
+    items[0] === "sidebar" ? ["sidebar", "appMenu", ...items.slice(1)] : ["appMenu", ...items];
+  return <Items items={entries} text={text} />;
 }
 
 /**

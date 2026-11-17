@@ -394,9 +394,11 @@ function StructureTabView({
   );
 
   const onEdit = useCallback(
-    (key: string, field: ColumnField, raw: string | boolean) => {
+    (key: string, field: ColumnField, raw: string | boolean): boolean => {
       const parsed = checked(key, field, raw);
-      if (parsed) apply((m, current) => editColumn(m, current, dialect, key, field, parsed.value));
+      if (!parsed) return false;
+      apply((m, current) => editColumn(m, current, dialect, key, field, parsed.value));
+      return true;
     },
     [apply, dialect, checked],
   );
@@ -566,8 +568,9 @@ function StructureTabView({
       onRestoreMany: (keys: string[]) => apply((m, current) => restoreColumns(m, current, keys)),
       onAdd: onAddColumn,
       onSelect: onSelectColumn,
+      onOpenTable: (ref: TableRef) => openTable(connectionId, ref, "structure"),
     }),
-    [onEdit, onPreset, onSetCheck, apply, onAddColumn, onSelectColumn],
+    [onEdit, onPreset, onSetCheck, apply, onAddColumn, onSelectColumn, openTable, connectionId],
   );
 
   // ---- indexes, checks, table -------------------------------------------------
@@ -598,7 +601,7 @@ function StructureTabView({
   }, [meta.data, editable, view, stage, tab.id]);
 
   const onEditIndex = useCallback(
-    (key: string, patch: Partial<IndexDef>) => {
+    (key: string, patch: Partial<IndexDef>): boolean | void => {
       const m = meta.data;
       const row = view?.indexes.find((x) => x.key === key);
       if (!m || !view || !row) return;
@@ -612,12 +615,12 @@ function StructureTabView({
         );
         if (taken) {
           toast.error(`An index named “${next.name}” already exists`);
-          return;
+          return false;
         }
       }
       if (next.columns !== undefined && next.columns.length === 0) {
         toast.error("An index needs at least one column");
-        return;
+        return false;
       }
       // A staged index still named after its columns follows them.
       if (
@@ -655,12 +658,14 @@ function StructureTabView({
   }, [meta.data, editable, view, stage, tab.id]);
 
   const onRename = useCallback(
-    (name: string) => {
+    // False keeps what was typed in the name cell (CellInput) instead of snapping back.
+    (name: string): boolean => {
       if (!name.trim()) {
         toast.error("Table name is required");
-        return;
+        return false;
       }
       apply((m, current) => setTableName(m, current, name));
+      return true;
     },
     [apply],
   );
@@ -841,7 +846,33 @@ function StructureTabView({
     }
     openSqlInNewQueryTab(connectionId, sql, dialect, `${table.name}.sql`);
   }, [qc, connectionId, table, dialect]);
-  const [fkOpen, setFkOpen] = useState(false);
+  // The foreign key dialog: a new key (`replaces` null) or the key of a row opened for editing.
+  // Closing keeps the rest, so the dialog stays the same instance while it fades out (its title
+  // does not flip, and focus still returns to the grid); its form remounts on the next open.
+  const [fkDialog, setFkDialog] = useState<{
+    open: boolean;
+    replaces: string | null;
+    initial?: FkDef;
+  }>({ open: false, replaces: null });
+  const onEditFk = useCallback(
+    (key: string) => {
+      const fk = view?.foreignKeys.find((x) => x.key === key);
+      if (!fk) return;
+      setFkDialog({
+        open: true,
+        replaces: key,
+        initial: {
+          name: fk.name,
+          columns: fk.columns,
+          refTable: fk.refTable,
+          refColumns: fk.refColumns,
+          onUpdate: fk.onUpdate,
+          onDelete: fk.onDelete,
+        },
+      });
+    },
+    [view],
+  );
 
   const liveColumns = useMemo(
     () => view?.columns.filter((c) => c.status !== "dropped").map((c) => c.name) ?? [],
@@ -1059,7 +1090,8 @@ function StructureTabView({
                   <ForeignKeysSection
                     rows={v.foreignKeys}
                     editable={editable}
-                    onAdd={() => setFkOpen(true)}
+                    onAdd={() => setFkDialog({ open: true, replaces: null })}
+                    onEdit={onEditFk}
                     onDrop={(key) => apply((mm, current) => dropForeignKey(mm, current, key))}
                     onRestore={(key) => apply((mm, current) => restoreForeignKey(mm, current, key))}
                     onOpenTable={openStructure}
@@ -1266,12 +1298,20 @@ function StructureTabView({
       />
       {editable && (
         <AddForeignKeyDialog
-          open={fkOpen}
-          onOpenChange={setFkOpen}
+          open={fkDialog.open}
+          onOpenChange={(o) => !o && setFkDialog((d) => ({ ...d, open: false }))}
           connectionId={connectionId}
           table={m.table}
           columns={liveColumns}
-          onAdd={(fk) => apply((mm, current) => addForeignKey(mm, current, fk))}
+          initial={fkDialog.initial}
+          onAdd={(fk) => {
+            const replaces = fkDialog.replaces;
+            apply((mm, current) =>
+              replaces === null
+                ? addForeignKey(mm, current, fk)
+                : replaceForeignKey(mm, current, replaces, fk),
+            );
+          }}
           returnFocus={focusRoot}
         />
       )}

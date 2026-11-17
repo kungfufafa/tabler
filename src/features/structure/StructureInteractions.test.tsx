@@ -461,7 +461,7 @@ describe("prefix lengths of MySQL index columns", () => {
       target: { value: "10" },
     });
     expect(screen.queryByRole("status")).toBeNull();
-    fireEvent.keyDown(screen.getByLabelText("email prefix length"), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
     await waitFor(() =>
       expect(ops()[0]).toMatchObject({ op: "addIndex", index: { columns: ["email(10)"] } }),
     );

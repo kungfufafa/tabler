@@ -118,10 +118,13 @@ describe("QueryTab", () => {
     const run = getQueryTab(id).run!;
     expect(run.status).toBe("done");
     expect(resultData.rowCount(run.results[0]!.id)).toBe(5);
-    expect(await screen.findByRole("tab", { name: /Result 1 · 5 rows · \d+ ms/ })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
+    const tab = await screen.findByRole("tab", { name: "Result 1" });
+    expect(tab).toHaveAttribute("aria-selected", "true");
+    // One result: its rows and time are said once, in its footer (the tab's tooltip has them too).
+    expect(tab).toHaveAttribute("title", expect.stringMatching(/^Result 1 · 5 rows · \d+ ms$/));
+    expect(screen.queryByText(/^1 statement · /)).not.toBeInTheDocument();
+    // Collapsed results: the bar says it.
+    act(() => updateQueryTab(id, { resultsCollapsed: true }));
     expect(screen.getByText(/^1 statement · 5 rows · \d+ ms$/)).toBeInTheDocument();
   });
 
@@ -142,7 +145,10 @@ describe("QueryTab", () => {
     expect(run.sql).toBe("select * from tags");
     expect(run.baseOffset).toBe(10);
     expect(run.statements).toHaveLength(1);
-    expect(await screen.findByRole("tab", { name: /Result 1 · 15 rows/ })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Result 1" })).toHaveAttribute(
+      "title",
+      expect.stringMatching(/^Result 1 · 15 rows/),
+    );
   });
 
   it("maps an error in a selection to a diagnostic at the right offset", async () => {
@@ -177,7 +183,7 @@ describe("QueryTab", () => {
   });
 
   it("cancels a long-running statement with Stop", async () => {
-    const { id, type } = setup();
+    const { id, type, view } = setup();
     type("select pg_sleep(10)");
     let done: Promise<boolean> | undefined;
     act(() => {
@@ -187,13 +193,18 @@ describe("QueryTab", () => {
     await waitFor(() => expect(actions.has("query.cancel")).toBe(true));
     // Cancel takes the Run button's place while the statement runs.
     expect(screen.queryByRole("button", { name: "Run Current" })).toBeNull();
-    expect(
-      within(screen.getByRole("toolbar", { name: "Query" })).getByText("Running…"),
-    ).toBeInTheDocument();
+    const busy = within(screen.getByRole("toolbar", { name: "Query" })).getByText("Running…");
+    // Screen readers only at first; after a second the bar shows it with the time it has taken.
+    expect(busy.parentElement).toHaveClass("sr-only");
+    await waitFor(() => expect(busy.parentElement).not.toHaveClass("sr-only"), { timeout: 3000 });
+    expect(busy.parentElement).toHaveTextContent(/^Running…\d/);
+    // A mouse click leaves focus with the editor, though the Cancel button goes away.
+    act(() => view().contentDOM.blur());
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await act(async () => {
       await done;
     });
+    await waitFor(() => expect(view().hasFocus).toBe(true));
     const run = getQueryTab(id).run!;
     expect(run.status).toBe("cancelled");
     expect(run.statements[0]?.status).toBe("cancelled");
@@ -251,12 +262,15 @@ describe("QueryTab", () => {
   });
 
   it("runs the current statement from the Run button, or everything once chosen", async () => {
-    const { id, type } = setup();
+    const { id, type, view } = setup();
     const sql = "select 1;\nselect * from tags;\nselect 3;";
     type(sql, sql.indexOf("tags"));
+    act(() => view().contentDOM.blur());
     fireEvent.click(screen.getByRole("button", { name: "Run Current" }));
     await waitFor(() => expect(getQueryTab(id).run?.status).toBe("done"));
     expect(getQueryTab(id).run?.sql).toBe("select * from tags");
+    // Focus goes back to the editor, so typing and ⌘↩ work again (TablePlus does the same).
+    await waitFor(() => expect(view().hasFocus).toBe(true));
 
     fireEvent.keyDown(screen.getByRole("button", { name: "Run options" }), { key: "Enter" });
     expect(await screen.findByRole("menuitem", { name: /Run Current/ })).toBeInTheDocument();
@@ -663,8 +677,9 @@ describe("Editor bar", () => {
       act(() => flushResultVersions());
       expect(run.mock.calls.at(-1)?.[3]).toEqual({ maxRows: 100, stopOnError: true });
       expect(getQueryTab(id).run?.results[0]?.truncated).toBe(true);
-      expect(screen.getByText(/^1 statement · 100 rows · \d+ ms$/)).toBeInTheDocument();
-      expect(screen.getByText("Limit reached")).toBeInTheDocument();
+      // The result's footer says the limit cut it; the bar does not repeat it.
+      expect(await screen.findByText("100 rows (auto limited 100 rows)")).toBeInTheDocument();
+      expect(screen.queryByText("Limit reached")).not.toBeInTheDocument();
 
       // Back to "No limit".
       act(() => updateQueryTab(id, { rowLimit: null }));
@@ -707,6 +722,13 @@ describe("Editor bar", () => {
   });
 });
 
+/** The editor bar's ⋯ menu ▸ Export Results…. */
+async function exportFromMenu() {
+  fireEvent.keyDown(screen.getByRole("button", { name: "More query actions" }), { key: "Enter" });
+  fireEvent.click(await screen.findByRole("menuitem", { name: /Export Results…/ }));
+  await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+}
+
 describe("Export results", () => {
   it("exports the statement under the cursor, overriding the app-wide ⌘⇧E default", async () => {
     // Stands in for <ExportHost/>, which the app shell mounts before any tab.
@@ -734,7 +756,7 @@ describe("Export results", () => {
     const { view, type } = setup();
     type("select 1;\nselect 2;");
     act(() => view().dispatch({ selection: { anchor: 0, head: view().state.doc.length } }));
-    fireEvent.click(screen.getByRole("button", { name: "Export results…" }));
+    await exportFromMenu();
     expect(useExportStore.getState().open).toBe(false);
     expect(toast.message).toHaveBeenCalledWith(
       "Select a single statement to export",
@@ -742,7 +764,7 @@ describe("Export results", () => {
     );
 
     act(() => view().dispatch({ selection: { anchor: 10, head: view().state.doc.length } }));
-    fireEvent.click(screen.getByRole("button", { name: "Export results…" }));
+    await exportFromMenu();
     expect(useExportStore.getState().target?.source).toEqual({ kind: "sql", sql: "select 2" });
   });
 
@@ -756,7 +778,7 @@ describe("Export results", () => {
     // The cursor sits in the second statement; the first result is shown.
     act(() => view().dispatch({ selection: { anchor: view().state.doc.length } }));
     act(() => updateQueryTab(id, { pane: run.results[0]!.id }));
-    fireEvent.click(screen.getByRole("button", { name: "Export results…" }));
+    await exportFromMenu();
     const source = useExportStore.getState().target?.source;
     expect(source).toMatchObject({
       kind: "rows",
@@ -823,9 +845,9 @@ describe("Export results", () => {
     expect(source.rows.length).toBeLessThan(10_000);
   });
 
-  it("says so when there is nothing to export", () => {
+  it("says so when there is nothing to export", async () => {
     setup();
-    fireEvent.click(screen.getByRole("button", { name: "Export results…" }));
+    await exportFromMenu();
     expect(useExportStore.getState().open).toBe(false);
     expect(toast.message).toHaveBeenCalledWith("Nothing to export", expect.anything());
   });

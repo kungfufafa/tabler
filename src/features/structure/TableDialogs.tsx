@@ -1,4 +1,5 @@
 import { QuietStatus } from "@/components/QuietLoading";
+import { useDirtyDialogGuard } from "@/hooks/useDirtyDialogGuard";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ChevronRight, Plus, Trash2 } from "lucide-react";
 import {
@@ -265,254 +266,271 @@ export function CreateTableDialog({
   const comments = supportsComments(dialect);
   const errors = submitted && !result.ok ? result.errors : [];
   const cell = "h-7 rounded-md px-1.5 text-xs md:text-xs";
+  // A stray Escape or click outside must not throw away a table design: anything beyond the
+  // untouched starting form (one `id` column) asks first.
+  const guard = useDirtyDialogGuard({
+    dirty: name.trim() !== "" || !sameDrafts(rows, initialColumns(dialect)),
+    onClose: () => onOpenChange(false),
+    what: "the new table",
+  });
 
   return (
-    // While CREATE runs, Esc / the overlay / the close button must not dismiss the dialog: its
-    // outcome (an error to show, or the new table's tab) would land in a closed dialog.
-    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent
-        className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(48rem,calc(100%-2rem))]"
-        onKeyDown={onKeyDown}
-      >
-        <DialogHeader>
-          <DialogTitle className="text-sm">New Table</DialogTitle>
-          <DialogDescription className="text-xs">
-            {schema ? (
-              <>
-                In <span className="font-mono">{schema}</span>.{" "}
-              </>
-            ) : null}
-            Columns can be changed later in the Structure tab.
-          </DialogDescription>
-        </DialogHeader>
-        <Field label="Table name" htmlFor={`${id}-name`}>
-          <Input
-            id={`${id}-name`}
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="new_table"
-            className="h-7 rounded-md font-mono text-xs md:text-xs"
-            spellCheck={false}
-            autoComplete="off"
-          />
-        </Field>
-        <datalist id={`${id}-types`}>
-          {typeSuggestions(dialect).map((t) => (
-            <option key={t} value={t} />
-          ))}
-        </datalist>
-        <div className="border-border min-h-24 flex-1 overflow-auto rounded-md border">
-          <table className="w-full min-w-[640px] table-fixed border-collapse text-xs">
-            <colgroup>
-              <col className="w-[22%]" />
-              <col className="w-[20%]" />
-              <col className="w-16" />
-              <col className={comments ? "w-[18%]" : undefined} />
-              <col className="w-10" />
-              <col className="w-10" />
-              {comments && <col />}
-              <col className="w-20" />
-            </colgroup>
-            <thead>
-              <tr className="text-muted-foreground [&>th]:bg-surface-2 h-7 text-left text-xs [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:shadow-[inset_0_-1px_0_var(--color-border)]">
-                <th className="px-2 font-medium">Name</th>
-                <th className="px-2 font-medium">Type</th>
-                <th className="px-1 text-center font-medium">Nullable</th>
-                <th className="px-2 font-medium">Default</th>
-                <th className="px-1 text-center font-medium" title="Primary key">
-                  PK
-                </th>
-                <th className="px-1 text-center font-medium" title="Auto increment">
-                  AI
-                </th>
-                {comments && <th className="px-2 font-medium">Comment</th>}
-                <th aria-label="Actions" />
-              </tr>
-            </thead>
-            <tbody ref={gridRef}>
-              {rows.map((r, i) => (
-                <tr key={r.id} className="border-gridline group h-8 border-b last:border-b-0">
-                  <td className="px-1">
-                    <Input
-                      data-draft={r.id}
-                      aria-label={`Column ${i + 1} name`}
-                      value={r.name}
-                      onChange={(e) => update(r.id, { name: e.target.value })}
-                      placeholder={`column_${i + 1}`}
-                      className={cn(cell, "font-mono")}
-                      spellCheck={false}
-                      autoComplete="off"
-                    />
-                  </td>
-                  <td className="px-1">
-                    <Input
-                      aria-label={`Column ${i + 1} type`}
-                      value={r.dataType}
-                      list={`${id}-types`}
-                      onChange={(e) => update(r.id, { dataType: e.target.value })}
-                      className={cn(cell, "font-mono")}
-                      spellCheck={false}
-                      autoComplete="off"
-                    />
-                  </td>
-                  <td className="px-1 text-center">
-                    <Checkbox
-                      aria-label={`Column ${i + 1} nullable`}
-                      checked={r.nullable && !r.primaryKey}
-                      disabled={r.primaryKey}
-                      onCheckedChange={(v) => update(r.id, { nullable: v === true })}
-                      className="mx-auto"
-                    />
-                  </td>
-                  <td className="px-1">
-                    <Input
-                      aria-label={`Column ${i + 1} default`}
-                      value={r.defaultExpr}
-                      onChange={(e) => update(r.id, { defaultExpr: e.target.value })}
-                      placeholder="—"
-                      className={cn(cell, "font-mono")}
-                      spellCheck={false}
-                      autoComplete="off"
-                    />
-                  </td>
-                  <td className="px-1 text-center">
-                    <Checkbox
-                      aria-label={`Column ${i + 1} primary key`}
-                      checked={r.primaryKey}
-                      onCheckedChange={(v) => update(r.id, { primaryKey: v === true })}
-                      className="mx-auto"
-                    />
-                  </td>
-                  <td className="px-1 text-center">
-                    <Checkbox
-                      aria-label={`Column ${i + 1} auto increment`}
-                      checked={r.autoIncrement}
-                      onCheckedChange={(v) => update(r.id, { autoIncrement: v === true })}
-                      className="mx-auto"
-                    />
-                  </td>
-                  {comments && (
+    <>
+      {/* While CREATE runs, Esc / the overlay / the close button must not dismiss the dialog: its
+          outcome (an error to show, or the new table's tab) would land in a closed dialog. */}
+      <Dialog open={open} onOpenChange={(o) => !busy && guard.onOpenChange(o)}>
+        <DialogContent
+          className="flex h-[min(34rem,calc(100dvh-4rem))] flex-col sm:max-w-[min(48rem,calc(100%-2rem))]"
+          onKeyDown={onKeyDown}
+          {...guard.contentProps}
+        >
+          <DialogHeader>
+            <DialogTitle className="text-sm">New Table</DialogTitle>
+            <DialogDescription className="text-xs">
+              {schema ? (
+                <>
+                  In <span className="font-mono">{schema}</span>.{" "}
+                </>
+              ) : null}
+              Columns can be changed later in the Structure tab.
+            </DialogDescription>
+          </DialogHeader>
+          <Field label="Table name" htmlFor={`${id}-name`}>
+            <Input
+              id={`${id}-name`}
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="new_table"
+              className="h-7 rounded-md font-mono text-xs md:text-xs"
+              spellCheck={false}
+              autoComplete="off"
+            />
+          </Field>
+          <datalist id={`${id}-types`}>
+            {typeSuggestions(dialect).map((t) => (
+              <option key={t} value={t} />
+            ))}
+          </datalist>
+          <div className="border-border min-h-24 flex-1 overflow-auto rounded-md border">
+            <table className="w-full min-w-[640px] table-fixed border-collapse text-xs">
+              <colgroup>
+                <col className="w-[22%]" />
+                <col className="w-[20%]" />
+                <col className="w-16" />
+                <col className={comments ? "w-[18%]" : undefined} />
+                <col className="w-10" />
+                <col className="w-10" />
+                {comments && <col />}
+                <col className="w-20" />
+              </colgroup>
+              <thead>
+                <tr className="text-muted-foreground [&>th]:bg-surface-2 h-7 text-left text-xs [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:shadow-[inset_0_-1px_0_var(--color-border)]">
+                  <th className="px-2 font-medium">Name</th>
+                  <th className="px-2 font-medium">Type</th>
+                  <th className="px-1 text-center font-medium">Nullable</th>
+                  <th className="px-2 font-medium">Default</th>
+                  <th className="px-1 text-center font-medium" title="Primary key">
+                    PK
+                  </th>
+                  <th className="px-1 text-center font-medium" title="Auto increment">
+                    AI
+                  </th>
+                  {comments && <th className="px-2 font-medium">Comment</th>}
+                  <th aria-label="Actions" />
+                </tr>
+              </thead>
+              <tbody ref={gridRef}>
+                {rows.map((r, i) => (
+                  <tr key={r.id} className="border-gridline group h-8 border-b last:border-b-0">
                     <td className="px-1">
                       <Input
-                        aria-label={`Column ${i + 1} comment`}
-                        value={r.comment}
-                        onChange={(e) => update(r.id, { comment: e.target.value })}
-                        className={cell}
+                        data-draft={r.id}
+                        aria-label={`Column ${i + 1} name`}
+                        value={r.name}
+                        onChange={(e) => update(r.id, { name: e.target.value })}
+                        placeholder={`column_${i + 1}`}
+                        className={cn(cell, "font-mono")}
+                        spellCheck={false}
                         autoComplete="off"
                       />
                     </td>
-                  )}
-                  <td className="px-1">
-                    <div className="flex items-center justify-end">
-                      <IconAction
-                        label="Move up"
-                        disabled={i === 0}
-                        onClick={() => setRows((rs) => moveDraft(rs, i, -1))}
-                      >
-                        <ArrowUp />
-                      </IconAction>
-                      <IconAction
-                        label="Move down"
-                        disabled={i === rows.length - 1}
-                        onClick={() => setRows((rs) => moveDraft(rs, i, 1))}
-                      >
-                        <ArrowDown />
-                      </IconAction>
-                      <IconAction
-                        label="Remove column"
-                        onClick={() => setRows((rs) => rs.filter((x) => x.id !== r.id))}
-                        className="hover:text-error"
-                      >
-                        <Trash2 />
-                      </IconAction>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="text-muted-foreground py-6 text-center text-xs">
-                    No columns yet
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="xs" onClick={addRow}>
-            <Plus /> Add Column
-          </Button>
-          <span className="flex-1" />
-          <Button
-            variant="ghost"
-            size="xs"
-            aria-expanded={showSql}
-            onClick={() => setShowSql((v) => !v)}
-          >
-            <ChevronRight
-              className={cn(
-                "transition-transform duration-150 motion-reduce:transition-none",
-                showSql && "rotate-90",
-              )}
-            />
-            Preview SQL
-          </Button>
-        </div>
-        {showSql && (
-          <div className="border-border bg-surface-2 max-h-48 min-h-12 overflow-auto rounded-md border px-3 py-2">
-            {!result.ok ? (
-              errors.length > 0 ? (
-                <p className="text-muted-foreground text-xs">
-                  Fix the problems below to see the SQL.
-                </p>
-              ) : (
-                <div className="flex flex-col gap-0.5 text-xs">
-                  <p className="text-muted-foreground">Fix these problems to see the SQL:</p>
-                  <ul className="text-error flex flex-col gap-0.5">
-                    {result.errors.map((e) => (
-                      <li key={e}>{e}</li>
-                    ))}
-                  </ul>
-                </div>
-              )
-            ) : preview.isError ? (
-              <p className="text-error text-xs">{preview.error.message}</p>
-            ) : preview.data ? (
-              <>
-                <SqlBlock sql={preview.data.statements.join(";\n\n")} dialect={dialect} />
-                {preview.data.warnings.map((w, i) => (
-                  <p key={i} className="text-warning mt-1 text-xs">
-                    {w}
-                  </p>
+                    <td className="px-1">
+                      <Input
+                        aria-label={`Column ${i + 1} type`}
+                        value={r.dataType}
+                        list={`${id}-types`}
+                        onChange={(e) => update(r.id, { dataType: e.target.value })}
+                        className={cn(cell, "font-mono")}
+                        spellCheck={false}
+                        autoComplete="off"
+                      />
+                    </td>
+                    <td className="px-1 text-center">
+                      <Checkbox
+                        aria-label={`Column ${i + 1} nullable`}
+                        checked={r.nullable && !r.primaryKey}
+                        disabled={r.primaryKey}
+                        onCheckedChange={(v) => update(r.id, { nullable: v === true })}
+                        className="mx-auto"
+                      />
+                    </td>
+                    <td className="px-1">
+                      <Input
+                        aria-label={`Column ${i + 1} default`}
+                        value={r.defaultExpr}
+                        onChange={(e) => update(r.id, { defaultExpr: e.target.value })}
+                        placeholder="—"
+                        className={cn(cell, "font-mono")}
+                        spellCheck={false}
+                        autoComplete="off"
+                      />
+                    </td>
+                    <td className="px-1 text-center">
+                      <Checkbox
+                        aria-label={`Column ${i + 1} primary key`}
+                        checked={r.primaryKey}
+                        onCheckedChange={(v) => update(r.id, { primaryKey: v === true })}
+                        className="mx-auto"
+                      />
+                    </td>
+                    <td className="px-1 text-center">
+                      <Checkbox
+                        aria-label={`Column ${i + 1} auto increment`}
+                        checked={r.autoIncrement}
+                        onCheckedChange={(v) => update(r.id, { autoIncrement: v === true })}
+                        className="mx-auto"
+                      />
+                    </td>
+                    {comments && (
+                      <td className="px-1">
+                        <Input
+                          aria-label={`Column ${i + 1} comment`}
+                          value={r.comment}
+                          onChange={(e) => update(r.id, { comment: e.target.value })}
+                          className={cell}
+                          autoComplete="off"
+                        />
+                      </td>
+                    )}
+                    <td className="px-1">
+                      <div className="flex items-center justify-end">
+                        <IconAction
+                          label="Move up"
+                          disabled={i === 0}
+                          onClick={() => setRows((rs) => moveDraft(rs, i, -1))}
+                        >
+                          <ArrowUp />
+                        </IconAction>
+                        <IconAction
+                          label="Move down"
+                          disabled={i === rows.length - 1}
+                          onClick={() => setRows((rs) => moveDraft(rs, i, 1))}
+                        >
+                          <ArrowDown />
+                        </IconAction>
+                        <IconAction
+                          label="Remove column"
+                          onClick={() => setRows((rs) => rs.filter((x) => x.id !== r.id))}
+                          className="hover:text-error"
+                        >
+                          <Trash2 />
+                        </IconAction>
+                      </div>
+                    </td>
+                  </tr>
                 ))}
-              </>
-            ) : (
-              <QuietStatus />
-            )}
+                {rows.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="text-muted-foreground py-6 text-center text-xs">
+                      No columns yet
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
-        )}
-        {errors.length > 0 && (
-          <ul role="alert" className="text-error flex flex-col gap-0.5 text-xs">
-            {errors.map((e) => (
-              <li key={e}>{e}</li>
-            ))}
-          </ul>
-        )}
-        <ErrorLine error={error} />
-        <DialogFooter className="items-center">
-          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={busy}>
-            Cancel
-          </Button>
-          <Button size="sm" onClick={() => void create()} disabled={busy}>
-            Create Table
-            <KbdHint combo="Mod+Enter" />
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="xs" onClick={addRow}>
+              <Plus /> Add Column
+            </Button>
+            <span className="flex-1" />
+            <Button
+              variant="ghost"
+              size="xs"
+              aria-expanded={showSql}
+              onClick={() => setShowSql((v) => !v)}
+            >
+              <ChevronRight
+                className={cn(
+                  "transition-transform duration-150 motion-reduce:transition-none",
+                  showSql && "rotate-90",
+                )}
+              />
+              Preview SQL
+            </Button>
+          </div>
+          {showSql && (
+            <div className="border-border bg-surface-2 max-h-48 min-h-12 overflow-auto rounded-md border px-3 py-2">
+              {!result.ok ? (
+                errors.length > 0 ? (
+                  <p className="text-muted-foreground text-xs">
+                    Fix the problems below to see the SQL.
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-0.5 text-xs">
+                    <p className="text-muted-foreground">Fix these problems to see the SQL:</p>
+                    <ul className="text-error flex flex-col gap-0.5">
+                      {result.errors.map((e) => (
+                        <li key={e}>{e}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )
+              ) : preview.isError ? (
+                <p className="text-error text-xs">{preview.error.message}</p>
+              ) : preview.data ? (
+                <>
+                  <SqlBlock sql={preview.data.statements.join(";\n\n")} dialect={dialect} />
+                  {preview.data.warnings.map((w, i) => (
+                    <p key={i} className="text-warning mt-1 text-xs">
+                      {w}
+                    </p>
+                  ))}
+                </>
+              ) : (
+                <QuietStatus />
+              )}
+            </div>
+          )}
+          {errors.length > 0 && (
+            <ul role="alert" className="text-error flex flex-col gap-0.5 text-xs">
+              {errors.map((e) => (
+                <li key={e}>{e}</li>
+              ))}
+            </ul>
+          )}
+          <ErrorLine error={error} />
+          <DialogFooter className="items-center">
+            <Button variant="outline" size="sm" onClick={guard.requestClose} disabled={busy}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={() => void create()} disabled={busy}>
+              Create Table
+              <KbdHint combo="Mod+Enter" />
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {guard.confirm}
+    </>
   );
+}
+
+/** Whether two column lists hold the same drafts, ignoring their generated row ids. */
+function sameDrafts(a: ColumnDraft[], b: ColumnDraft[]): boolean {
+  const strip = (rs: ColumnDraft[]) => JSON.stringify(rs.map(({ id: _id, ...rest }) => rest));
+  return strip(a) === strip(b);
 }
 
 // --- rename ------------------------------------------------------------------------------------

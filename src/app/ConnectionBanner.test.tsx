@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { actions } from "@/features/palette/actions";
 import { useConnectionEvents } from "@/hooks/useConnectionEvents";
 import { ipc, type ConnectionInfo } from "@/lib/ipc";
@@ -36,7 +37,9 @@ function deferred<T>() {
 function renderBanner() {
   return render(
     <QueryClientProvider client={new QueryClient()}>
-      <ConnectionBanner />
+      <TooltipProvider>
+        <ConnectionBanner />
+      </TooltipProvider>
     </QueryClientProvider>,
   );
 }
@@ -50,13 +53,16 @@ function Events() {
 function renderApp(withBanner: boolean) {
   return render(
     <QueryClientProvider client={new QueryClient()}>
-      <Events />
-      {withBanner && <ConnectionBanner />}
+      <TooltipProvider>
+        <Events />
+        {withBanner && <ConnectionBanner />}
+      </TooltipProvider>
     </QueryClientProvider>,
   );
 }
 
-const reconnectButton = () => screen.getByRole("button", { name: "Reconnect" });
+// "Reconnect", or "Reconnecting…" while its attempt runs.
+const reconnectButton = () => screen.getByRole("button", { name: /^Reconnect/ });
 
 describe("ConnectionBanner", () => {
   beforeEach(() => {
@@ -84,6 +90,17 @@ describe("ConnectionBanner", () => {
     expect(reconnectButton()).toHaveClass("shrink-0");
   });
 
+  it("shows Reconnect's shortcut in its tooltip", async () => {
+    const conns = useConnectionsStore.getState();
+    conns.add(info("a", "pa"));
+    conns.setStatus("a", "lost");
+    renderBanner();
+    fireEvent.focus(reconnectButton());
+    const tip = await screen.findByRole("tooltip");
+    expect(tip).toHaveTextContent("Reconnect");
+    expect(tip.querySelector("kbd")).not.toBeNull();
+  });
+
   it("keeps each connection's Reconnect disabled until its own attempt finishes", async () => {
     const conns = useConnectionsStore.getState();
     conns.add(info("a", "pa"));
@@ -101,7 +118,9 @@ describe("ConnectionBanner", () => {
 
     fireEvent.click(reconnectButton());
     expect(reconnectButton()).toBeDisabled();
+    expect(reconnectButton()).toHaveTextContent("Reconnecting…");
     act(() => useConnectionsStore.getState().setActive("b"));
+    expect(reconnectButton()).toHaveTextContent(/^Reconnect$/);
     expect(reconnectButton()).toBeEnabled();
     fireEvent.click(reconnectButton());
     expect(reconnectButton()).toBeDisabled();

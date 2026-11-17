@@ -14,8 +14,9 @@ import {
   TextAlignStart,
   type LucideIcon,
 } from "lucide-react";
-import type { MouseEvent, ReactNode } from "react";
+import { useMemo, useRef, type MouseEvent, type ReactNode } from "react";
 import { KbdHint } from "@/components/KbdHint";
+import { useDelayedFlag } from "@/hooks/useDelayedFlag";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -45,15 +46,16 @@ import { cn } from "@/lib/utils";
 import { updateQueryTab, useQueryTabField } from "@/stores/queryTabs";
 import { useTabsStore } from "@/stores/tabs";
 import { useResultRowCount } from "@/stores/resultData";
-import { ROW_LIMITS } from "./controller";
+import { BUSY_LABEL_DELAY_MS, ROW_LIMITS } from "./controller";
 import { useCursorLabel } from "./cursor";
 import { EditorSettingsMenu } from "./EditorSettingsMenu";
 import { ElapsedTimer } from "./ElapsedTimer";
 import { runSummaryText } from "./labels";
 import { resolvePane } from "./panes";
 import { RUN_BUTTON_ACTION, useRunButtonStore, type RunButtonMode } from "./runButton";
-import { useActiveEditorKey } from "./split";
-import { summarize } from "./runModel";
+import { activeEditorKey, useActiveEditorKey } from "./split";
+import { focusEditor } from "./editorStates";
+import { summarize, type RunSummary as RunSummaryInfo } from "./runModel";
 
 export interface EditorBarHandlers {
   /** Runs the selection, or everything (⇧⌘↩). */
@@ -157,6 +159,45 @@ function ButtonKbd({ action, className }: { action: ActionId; className?: string
   );
 }
 
+const nextFrame: (fn: () => void) => void =
+  typeof requestAnimationFrame === "function"
+    ? (fn) => void requestAnimationFrame(() => fn())
+    : (fn) => void setTimeout(fn, 16);
+
+/**
+ * After a Run, Cancel or Explain click, keyboard focus goes back to the editor, as in TablePlus:
+ * the clicked button unmounts (Run turns into Cancel and back), which would leave focus on the
+ * page body, where typing and ⌘↩ do nothing. It is checked a frame later and only moves focus
+ * from the body, the bar or its menus, so a dialog the run opened first (safe mode, parameters)
+ * keeps it; such a dialog hands focus back to the editor when it closes.
+ */
+function focusEditorAfterClick(tabId: string): void {
+  nextFrame(() => {
+    const el = document.activeElement;
+    if (el && el !== document.body && !el.closest('[role="toolbar"], [role="menu"]')) return;
+    focusEditor(activeEditorKey(tabId));
+  });
+}
+
+/**
+ * A split button's menu that ran something: it must not put focus back on its ⌄ trigger when it
+ * closes, since `focusEditorAfterClick` moves it to the editor.
+ */
+function usePickedFromMenu() {
+  const picked = useRef(false);
+  return {
+    pick: (fn: () => void) => () => {
+      picked.current = true;
+      fn();
+    },
+    onCloseAutoFocus: (e: Event) => {
+      if (!picked.current) return;
+      picked.current = false;
+      e.preventDefault();
+    },
+  };
+}
+
 /** A ⇧-click, spelled the platform's way. */
 const SHIFT_CLICK = isMac ? "⇧-click" : "Shift+Click";
 
@@ -185,13 +226,45 @@ function CursorPosition({ tabId }: { tabId: string }) {
 }
 
 /**
+ * "Running… 1.2 s": only for assistive tech at first, then visible as muted text once the run has
+ * taken `BUSY_LABEL_DELAY_MS`, so a slow query shows that it is still going and for how long.
+ */
+function BusyLabel({ label, since }: { label: string; since: number }) {
+  const visible = useDelayedFlag(true, BUSY_LABEL_DELAY_MS);
+  return (
+    <span
+      data-slot="run-busy"
+      className={
+        visible
+          ? "text-muted-foreground animate-in fade-in flex min-w-0 items-center gap-1.5 truncate text-[12px] whitespace-nowrap tabular-nums duration-300 motion-reduce:animate-none"
+          : "sr-only"
+      }
+    >
+      <span className="truncate">{label}</span>
+      <ElapsedTimer since={since} />
+    </span>
+  );
+}
+
+/**
+ * Whether the bar can leave a finished run's outcome to the results footer: one statement, one
+ * result set, no error and not canceled. Scripts, errors and cancels keep their summary.
+ */
+function quietSummary(s: RunSummaryInfo, resultSets: number): boolean {
+  return s.statements === 1 && resultSets === 1 && s.errors === 0 && !s.cancelled;
+}
+
+/**
  * What the tab's last run did ("3 statements · 200 rows · 45 ms", errors in red), the running
- * statement with a timer, or the plan's outcome while the Plan pane shows.
+ * statement with a timer, or the plan's outcome while the Plan pane shows. A plain run of one
+ * statement with one result says nothing here while that result shows: its footer already gives
+ * the row count and time, and TablePlus shows each of them once.
  */
 function RunSummary({ tabId }: { tabId: string }) {
   const run = useQueryTabField(tabId, "run");
   const plan = useQueryTabField(tabId, "plan");
   const pane = useQueryTabField(tabId, "pane");
+  const resultsCollapsed = useQueryTabField(tabId, "resultsCollapsed");
   const results = run?.results;
   const active = resolvePane(pane, results ?? [], plan);
   const shown = results?.find((r) => r.id === active) ?? null;
@@ -201,22 +274,13 @@ function RunSummary({ tabId }: { tabId: string }) {
   if (run?.status === "running") {
     const n = run.statements.length;
     return (
-      <span className="sr-only">
-        <span className="truncate">
-          {run.cancelling ? "Stopping…" : n > 1 ? `Running statement ${n}…` : "Running…"}
-        </span>
-        <ElapsedTimer since={run.startedAt} />
-      </span>
+      <BusyLabel
+        label={run.cancelling ? "Stopping…" : n > 1 ? `Running statement ${n}…` : "Running…"}
+        since={run.startedAt}
+      />
     );
   }
-  if (plan?.status === "running") {
-    return (
-      <span className="sr-only">
-        <span className="truncate">Explaining…</span>
-        <ElapsedTimer since={plan.startedAt} />
-      </span>
-    );
-  }
+  if (plan?.status === "running") return <BusyLabel label="Explaining…" since={plan.startedAt} />;
   if (active === "plan" && plan) {
     const title = plan.mode === "analyze" ? "Explain analyze" : "Explain";
     if (plan.status === "error")
@@ -232,6 +296,8 @@ function RunSummary({ tabId }: { tabId: string }) {
   }
   if (!run) return null;
   const s = summarize(run);
+  // The footer under the result says the rest (the row limit included).
+  if (shown && !resultsCollapsed && quietSummary(s, run.results.length)) return null;
   return (
     <span className={box} title={run.sql.length > 500 ? `${run.sql.slice(0, 500)}…` : run.sql}>
       <span
@@ -242,14 +308,6 @@ function RunSummary({ tabId }: { tabId: string }) {
       >
         {runSummaryText(s, shown ? rows : null)}
       </span>
-      {shown?.truncated && (
-        <span
-          className="text-warning shrink-0"
-          title={`Only the first ${formatCount(rows)} rows were read. Raise the row limit to read more.`}
-        >
-          Limit reached
-        </span>
-      )}
     </span>
   );
 }
@@ -313,6 +371,7 @@ function RunButton({
 }) {
   const mode = useRunButtonStore((s) => s.mode);
   const setMode = useRunButtonStore((s) => s.setMode);
+  const menu = usePickedFromMenu();
   if (busy) {
     return (
       <Tip label={cancelling ? "Stopping…" : "Cancel the running query"} action="query.cancel">
@@ -357,12 +416,12 @@ function RunButton({
             <ChevronDown className="size-3.5" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-60">
-          <DropdownMenuItem onSelect={handlers.runCurrent}>
+        <DropdownMenuContent align="end" className="w-60" onCloseAutoFocus={menu.onCloseAutoFocus}>
+          <DropdownMenuItem onSelect={menu.pick(handlers.runCurrent)}>
             Run Current
             <MenuShortcut action="query.run-current" />
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={handlers.run}>
+          <DropdownMenuItem onSelect={menu.pick(handlers.run)}>
             Run All
             <MenuShortcut action="query.run" />
           </DropdownMenuItem>
@@ -456,6 +515,7 @@ function ExplainButton({
   rollsBack?: boolean;
 }) {
   const analyzeNote = rollsBack ? "Runs in a rolled-back transaction" : "Runs the statement";
+  const menu = usePickedFromMenu();
   return (
     <div className="flex shrink-0 items-center">
       <Tip
@@ -492,13 +552,13 @@ function ExplainButton({
             <ChevronDown className="size-3.5" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-64">
-          <DropdownMenuItem onSelect={handlers.explain}>
+        <DropdownMenuContent align="end" className="w-64" onCloseAutoFocus={menu.onCloseAutoFocus}>
+          <DropdownMenuItem onSelect={menu.pick(handlers.explain)}>
             Explain
             <MenuShortcut action="query.explain" />
           </DropdownMenuItem>
           {analyze && (
-            <DropdownMenuItem onSelect={handlers.analyze} className="items-start">
+            <DropdownMenuItem onSelect={menu.pick(handlers.analyze)} className="items-start">
               <span className="flex min-w-0 flex-col">
                 Explain Analyze
                 <span className="text-muted-foreground text-xs leading-4">{analyzeNote}</span>
@@ -512,7 +572,10 @@ function ExplainButton({
   );
 }
 
-/** History, open / save and export: icon buttons, or one "⋯" menu when the bar is narrow. */
+/**
+ * History (inline when the bar is wide) and one "⋯" menu with every file action: open, save, save
+ * as, add to queries, export. TablePlus keeps its bar this sparse (cursor, limit, Beautify, Run).
+ */
 function FileActions({ handlers }: { handlers: EditorBarHandlers }) {
   return (
     <>
@@ -523,24 +586,6 @@ function FileActions({ handlers }: { handlers: EditorBarHandlers }) {
           action="query.history"
           onClick={handlers.history}
         />
-        <IconButton
-          icon={FolderOpen}
-          label="Open .sql file"
-          action="query.open"
-          onClick={handlers.open}
-        />
-        <IconButton
-          icon={Save}
-          label={`Save (${SHIFT_CLICK}: Save As…)`}
-          action="query.save"
-          onClick={(e) => (e.shiftKey ? handlers.saveAs() : handlers.save())}
-        />
-        <IconButton
-          icon={FileDown}
-          label="Export results…"
-          action="export.open"
-          onClick={handlers.exportResults}
-        />
       </div>
       <DropdownMenu>
         <Tip label="More query actions">
@@ -549,10 +594,7 @@ function FileActions({ handlers }: { handlers: EditorBarHandlers }) {
               variant="ghost"
               size="icon-sm"
               aria-label="More query actions"
-              className={cn(
-                "text-muted-foreground hover:text-foreground @min-[840px]:hidden",
-                ghostTone,
-              )}
+              className={cn("text-muted-foreground hover:text-foreground", ghostTone)}
             >
               <Ellipsis />
             </Button>
@@ -613,6 +655,22 @@ export function EditorBar({ tabId, handlers }: { tabId: string; handlers: Editor
   const connectionId = useTabsStore((s) => s.tabs.find((t) => t.id === tabId)?.connectionId);
   const caps = useCaps(connectionId ?? null);
   const offers = (f: Parameters<typeof has>[1]) => caps === null || has(caps, f);
+  // Clicks on Run / Cancel / Explain leave focus in the editor (shortcuts and the palette call
+  // `handlers` directly and keep focus where it was).
+  const runHandlers = useMemo(() => {
+    const back = (fn: () => void) => () => {
+      fn();
+      focusEditorAfterClick(tabId);
+    };
+    return {
+      ...handlers,
+      run: back(handlers.run),
+      runCurrent: back(handlers.runCurrent),
+      cancel: back(handlers.cancel),
+      explain: back(handlers.explain),
+      analyze: back(handlers.analyze),
+    };
+  }, [handlers, tabId]);
 
   return (
     <div
@@ -643,13 +701,13 @@ export function EditorBar({ tabId, handlers }: { tabId: string; handlers: Editor
           {offers("format") && <BeautifyButton handlers={handlers} />}
           {offers("explain") && (
             <ExplainButton
-              handlers={handlers}
+              handlers={runHandlers}
               busy={busy}
               analyze={offers("explainAnalyze")}
               rollsBack={caps === null || !appliesPartially(caps.data.transactions)}
             />
           )}
-          <RunButton handlers={handlers} busy={busy} cancelling={cancelling} />
+          <RunButton handlers={runHandlers} busy={busy} cancelling={cancelling} />
         </div>
       </div>
     </div>

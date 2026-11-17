@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { ActionId } from "@/features/palette/actions";
+import { isWindows } from "@/lib/platform";
 import { getPrefs, setPref, usePrefsStore } from "@/stores/prefs";
 import { isMac } from "./combo";
 import {
@@ -468,8 +469,26 @@ export function platformKeymap(defs: readonly ShortcutDef[], mac: boolean): Shor
   );
 }
 
+/**
+ * Bindings only Windows has. Its windows have no menu bar (the ⋮ button holds File, Edit,
+ * View…), so F10, the Windows key for "go to the menu", pops that menu. Not a bare Alt: an Alt
+ * key-up in a webview clashes with Alt+key shortcuts, Alt+click and AltGr on many layouts.
+ */
+export const WINDOWS_KEYMAP: readonly ShortcutDef[] = [
+  {
+    id: "ui.app-menu",
+    keys: "F10",
+    scope: "global",
+    label: "Show App Menu",
+    allowInEditor: true,
+  },
+];
+
 /** The effective keymap: this platform's built-in bindings, then the user's overrides. */
-export const KEYMAP: ShortcutDef[] = platformKeymap(BUILTIN_KEYMAP, isMac);
+export const KEYMAP: ShortcutDef[] = [
+  ...platformKeymap(BUILTIN_KEYMAP, isMac),
+  ...(isWindows ? WINDOWS_KEYMAP : []),
+];
 
 const SCOPE_CHAIN: Record<Scope, Scope[]> = {
   global: ["global"],

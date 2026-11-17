@@ -207,3 +207,24 @@ describe("the colour row of the status details", () => {
     expect(storeColor()).toBe("#303030");
   });
 });
+
+describe("Reconnect in the status details", () => {
+  it("is offered only while the connection is lost, and reconnects with the ping first", async () => {
+    const view = mount();
+    expect(screen.queryByRole("button", { name: /^Reconnect/ })).toBeNull();
+    view.unmount();
+
+    act(() => useConnectionsStore.getState().setStatus("c1", "lost", "timeout"));
+    const ping = vi.spyOn(ipc.connections, "ping").mockResolvedValue("connected");
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    // The attempt runs: the button says so and cannot start a second one.
+    expect(screen.getByRole("button", { name: "Reconnecting…" })).toBeDisabled();
+    await vi.waitFor(() => expect(ping).toHaveBeenCalledWith("c1"));
+    await vi.waitFor(() =>
+      expect(useConnectionsStore.getState().byId["c1"]?.status).toBe("connected"),
+    );
+    // Connected again: the footer is back to Edit / Switch.
+    expect(screen.queryByRole("button", { name: /^Reconnect/ })).toBeNull();
+  });
+});

@@ -10,7 +10,12 @@ import { DiagramHost } from "./DiagramHost";
 import { closeDiagram, openDiagram, useDiagramStore } from "./store";
 import { positionsKey } from "./viewport";
 
-const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+const toast = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  message: vi.fn((_title: string, _options?: unknown): string | number => "toast-id"),
+  dismiss: vi.fn(),
+}));
 vi.mock("sonner", () => ({ toast }));
 
 let info: ConnectionInfo;
@@ -127,24 +132,30 @@ describe("Diagram", () => {
     expect(cards(dialog).sort()).toEqual(["post_tags", "posts", "tags"]);
   });
 
-  it("opens a table on a click on its name, its structure on a double-click", async () => {
+  it("selects a card on a click on its name and stays open; double-click opens the table", async () => {
     let { dialog } = await setup();
+    // A click on the name is a click on the card: it selects, and the diagram stays.
+    fireEvent.pointerDown(nameOf(dialog, "users"), { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(window, { clientX: 10, clientY: 10 });
     fireEvent.click(nameOf(dialog, "users"));
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await new Promise((r) => setTimeout(r, 300));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(card(dialog, "users")).toHaveAttribute("data-selected", "true");
+    expect(useTabsStore.getState().tabs.filter((t) => t.kind !== "query")).toHaveLength(0);
+
+    fireEvent.doubleClick(nameOf(dialog, "users"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     let tab = useTabsStore.getState().tabs[0];
     expect(tab).toMatchObject({ kind: "table", table: { schema: "public", name: "users" } });
 
+    // ⌥ (Alt) + double-click opens the structure.
     act(() => openDiagram({ connectionId: info.connectionId, schema: "public", tables: null }));
     dialog = await screen.findByRole("dialog");
     await waitFor(() => expect(card(dialog, "tags")).not.toBeNull());
-    const name = nameOf(dialog, "tags");
-    fireEvent.click(name);
-    fireEvent.doubleClick(name);
+    fireEvent.doubleClick(nameOf(dialog, "tags"), { altKey: true });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     tab = useTabsStore.getState().tabs.find((t) => isTableTab(t) && t.table.name === "tags");
     expect(tab).toMatchObject({ kind: "structure" });
-    // The pending single click never fires.
-    await new Promise((r) => setTimeout(r, 300));
     expect(useTabsStore.getState().tabs.filter((t) => t.kind !== "query")).toHaveLength(2);
   });
 
@@ -165,10 +176,23 @@ describe("Diagram", () => {
         y: y! + 30,
       }),
     );
-    // Auto Layout forgets it.
+    // Auto Layout forgets it, and its message's Undo brings it back.
     fireEvent.click(within(dialog).getByRole("button", { name: /Auto Layout/ }));
     expect(card(dialog, "users")).toHaveAttribute("transform", before);
     expect(localStorage.getItem(key)).toBeNull();
+    expect(toast.message).toHaveBeenCalledWith("Tables rearranged", expect.anything());
+    const { action } = toast.message.mock.calls[0]![1] as {
+      action: { label: string; onClick: () => void };
+    };
+    expect(action.label).toBe("Undo");
+    act(() => action.onClick());
+    expect(card(dialog, "users")).toHaveAttribute("transform", `translate(${x! + 60} ${y! + 30})`);
+    expect(JSON.parse(localStorage.getItem(key) ?? "{}").users).toEqual({ x: x! + 60, y: y! + 30 });
+    // The Undo belongs to this diagram: closing it takes the message away.
+    toast.message.mockReturnValue("layout-toast");
+    fireEvent.click(within(dialog).getByRole("button", { name: /Auto Layout/ }));
+    act(() => closeDiagram());
+    expect(toast.dismiss).toHaveBeenCalledWith("layout-toast");
   });
 
   it("pans with the background and the arrow keys, zooms with ⌘+ / ⌘− / ⌘0", async () => {

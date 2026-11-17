@@ -129,9 +129,12 @@ describe("palette connect", () => {
     });
     expect(toast.dismiss.mock.calls.map((c) => c[0]).sort()).toEqual([1, 2]);
     // The failure is reported once, by useConnect.
-    expect(toast.error).toHaveBeenCalledWith("Could not connect to Shop MySQL", {
-      description: "connection refused",
-    });
+    expect(toast.error).toHaveBeenCalledWith(
+      "Could not connect to Shop MySQL",
+      expect.objectContaining({
+        description: "connection refused",
+      }),
+    );
     expect(usePaletteStore.getState().connecting).toEqual([]);
     expect(useConnectionsStore.getState().order).toEqual(["c1"]);
   });

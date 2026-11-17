@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { actions, type ActionId } from "@/features/palette/actions";
@@ -280,6 +281,28 @@ describe("Toolbar", () => {
     act(() => setPref("toolbarItems", ["refresh", "sidebar"]));
     const reordered = screen.getAllByRole("button").map((b) => b.getAttribute("aria-label"));
     expect(reordered.slice(0, 3)).toEqual(["Menu", "Refresh", "Toggle sidebar"]);
+  });
+
+  it("on Windows: the app menu opens from the keyboard and the window buttons have tooltips", async () => {
+    titleBar.overlay = false;
+    titleBar.own = true;
+    const popup = vi.spyOn(ipc.menu, "popup").mockResolvedValue();
+    useConnectionsStore.getState().add(info("a"));
+    wrap(<Toolbar launcher={false} />);
+    // F10 (`ui.app-menu`) pops the same menu as the ⋮ button, under it.
+    await act(async () => {
+      await actions.run("ui.app-menu");
+    });
+    expect(popup).toHaveBeenCalledTimes(1);
+    // The menu sits with the sidebar toggle in one capsule, as in TablePlus for Windows.
+    const menu = screen.getByRole("button", { name: "Menu" });
+    expect(
+      within(menu.closest("[data-slot=toolbar-group]") as HTMLElement)
+        .getAllByRole("button")
+        .map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Toggle sidebar", "Menu"]);
+    fireEvent.focus(screen.getByRole("button", { name: "Minimize" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Minimize");
   });
 
   it("enables the action control while the workspace has pending changes, in any of its tabs", () => {
@@ -582,6 +605,88 @@ describe("Toolbar", () => {
   it("says No connection without one", () => {
     wrap(<Toolbar launcher={false} />);
     expect(screen.getByRole("button", { name: /No connection/ })).toBeInTheDocument();
+  });
+
+  it("tints the connected pill with the connection colour", () => {
+    useConnectionsStore.getState().add(info("a", { color: "red" }));
+    wrap(<Toolbar launcher={false} />);
+    const pill = document.querySelector("[data-slot=status-pill]") as HTMLElement;
+    expect(pill).toHaveAttribute("data-state", "connected");
+    expect(pill.style.getPropertyValue("--pill-accent")).not.toBe("");
+    expect(pill.className).toContain("var(--pill-accent)_22%");
+    expect(pill).not.toHaveClass("bg-surface");
+  });
+
+  it("explains a greyed-out button in its tooltip", async () => {
+    useConnectionsStore.getState().add(info("a", { driver: "sqlite" }));
+    setPref("toolbarItems", ["actions", "users"]);
+    wrap(<Toolbar launcher={false} />);
+    const commit = screen.getByRole("button", { name: "Commit changes" });
+    expect(commit).toBeDisabled();
+    // The hover lands on the span around the disabled button (it takes no pointer events).
+    fireEvent.focus(commit);
+    const tip = await screen.findByRole("tooltip");
+    expect(tip).toHaveTextContent("Commit changes");
+    expect(tip).toHaveTextContent("Nothing to commit");
+    expect(commit.parentElement).toHaveAttribute("data-slot", "toolbar-tip");
+    fireEvent.blur(commit);
+    await vi.waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+
+    const users = screen.getByRole("button", { name: "User management" });
+    expect(users).toBeDisabled();
+    fireEvent.focus(users);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Not supported by SQLite");
+  });
+
+  it("puts each cluster of buttons in a capsule (TablePlus)", () => {
+    useConnectionsStore.getState().add(info("a"));
+    // The default set: [sidebar] [actions] [lock Databases SQL] pill [Metrics? Refresh Open] [panels].
+    wrap(<Toolbar launcher={false} />);
+    const groups = Array.from(document.querySelectorAll("[data-slot=toolbar-group]"));
+    const names = groups.map((g) =>
+      within(g as HTMLElement)
+        .getAllByRole("button")
+        .map((b) => b.getAttribute("aria-label")),
+    );
+    expect(names).toEqual([
+      ["Toggle sidebar"],
+      [expect.stringMatching(/^Safe mode/), "Open database", "New query"],
+      ["Refresh", "Open anything"],
+    ]);
+    // The action control and the panel switches stay capsules of their own.
+    expect(
+      document.querySelector("[data-slot=action-control]")?.closest("[data-slot=toolbar-group]"),
+    ).toBeNull();
+    expect(screen.getByRole("group", { name: "Panels" })).toBeInTheDocument();
+  });
+
+  it("hides a capsule whose items all give way in a narrow window", () => {
+    useConnectionsStore.getState().add(info("a"));
+    setPref("toolbarItems", ["openAnything", "status", "refresh"]);
+    wrap(<Toolbar launcher={false} />);
+    const [open, refresh] = Array.from(document.querySelectorAll("[data-slot=toolbar-group]"));
+    expect(open).toHaveClass("@max-3xl/toolbar:hidden");
+    expect(refresh).not.toHaveClass("@max-3xl/toolbar:hidden");
+  });
+
+  it("confirms a new safe-mode level", async () => {
+    const success = vi.spyOn(toast, "success");
+    const profile = {
+      id: "p-a",
+      name: "Conn a",
+      options: { safeMode: "silent" },
+    } as ConnectionProfile;
+    vi.mocked(ipc.profiles.list).mockResolvedValue([profile]);
+    vi.spyOn(ipc.profiles, "get").mockResolvedValue(profile);
+    vi.spyOn(ipc.profiles, "save").mockImplementation(async (input) => input.profile);
+    useConnectionsStore.getState().add(info("a"));
+    wrap(<Toolbar launcher={false} />);
+    const lock = await screen.findByRole("button", { name: "Safe mode: Silent Mode" });
+    fireEvent.keyDown(lock, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^Alert Mode 1/ }));
+    await vi.waitFor(() =>
+      expect(success).toHaveBeenCalledWith("Safe mode: Alert Mode 1", { description: "Conn a" }),
+    );
   });
 });
 

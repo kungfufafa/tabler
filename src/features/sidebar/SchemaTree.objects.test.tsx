@@ -232,6 +232,78 @@ describe("SchemaTree objects", () => {
     expect(ipc.objects.routineDefinition).toHaveBeenCalledOnce();
   });
 
+  it("clicking a function again shows its open tab; Open in New Tab opens another", async () => {
+    vi.spyOn(ipc.objects, "routineDefinition").mockResolvedValue("CREATE FUNCTION slugify() ...");
+    renderTree();
+    await screen.findByRole("button", { name: /^Functions/ });
+    fireEvent.click(row("slugify"), { detail: 1 });
+    await waitFor(() => expect(useTabsStore.getState().tabs).toHaveLength(1));
+    const first = useTabsStore.getState().tabs[0]!.id;
+    useTabsStore.getState().newQuery("c1");
+    expect(useTabsStore.getState().activeId).not.toBe(first);
+
+    // Browsing back to it: the tab it is open in comes to the front, no copy.
+    fireEvent.click(row("archive_posts"), { detail: 1 });
+    fireEvent.click(row("slugify"), { detail: 1 });
+    await waitFor(() => expect(useTabsStore.getState().activeId).toBe(first));
+    await waitFor(() =>
+      expect(useTabsStore.getState().tabs.filter((t) => t.title === "slugify")).toHaveLength(1),
+    );
+    fireEvent.keyDown(row("slugify"), { key: "Enter" });
+    expect(useTabsStore.getState().tabs.filter((t) => t.title === "slugify")).toHaveLength(1);
+    expect(
+      vi.mocked(ipc.objects.routineDefinition).mock.calls.filter(([, r]) => r.name === "slugify"),
+    ).toHaveLength(1);
+
+    fireEvent.contextMenu(row("slugify"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open in New Tab" }));
+    await waitFor(() =>
+      expect(useTabsStore.getState().tabs.filter((t) => t.title === "slugify")).toHaveLength(2),
+    );
+  });
+
+  it("F2 renames a table, as the menu's Rename… does; not a view", async () => {
+    renderTree();
+    await screen.findByRole("button", { name: /^Tables/ });
+    fireEvent.keyDown(row("user_stats"), { key: "F2" });
+    expect(useObjectsStore.getState().dialog).toBeNull();
+    fireEvent.keyDown(row("posts"), { key: "F2" });
+    expect(useObjectsStore.getState().dialog?.dialog).toEqual(
+      expect.objectContaining({
+        kind: "renameTable",
+        table: expect.objectContaining({ name: "posts" }),
+      }),
+    );
+    act(() => closeObjectDialog());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.contextMenu(row("posts"));
+    expect(screen.getByRole("menuitem", { name: /^Rename…/ })).toHaveTextContent("F2");
+  });
+
+  it("shows the full name of a table on hover, before its comment", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <SchemaTree
+          connectionId="c1"
+          rows={buildTreeRows(
+            [{ ...table("types_zoo_affinity_archive_2024"), comment: "old rows" }, table("tags")],
+            "",
+          )}
+          loading={false}
+          error={null}
+          search=""
+        />
+      </QueryClientProvider>,
+    );
+    await screen.findByRole("button", { name: /^Tables/ });
+    expect(row("types_zoo_affinity_archive_2024")).toHaveAttribute(
+      "title",
+      "types_zoo_affinity_archive_2024 — old rows",
+    );
+    expect(row("tags")).toHaveAttribute("title", "tags");
+  });
+
   it("selects with ⌘-click, ⇧-click and ⌘A", async () => {
     renderTree();
     await screen.findByRole("button", { name: /^Functions/ });
@@ -259,7 +331,7 @@ describe("SchemaTree objects", () => {
 
     // The menu of a selected row acts on the whole selection (tables and views here).
     fireEvent.contextMenu(row("tags"));
-    expect(screen.getByRole("menuitem", { name: "Copy 4 Names" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /^Copy 4 Names/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /^Delete 4 Items…/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /^Truncate 3 Items…/ })).toBeInTheDocument();
   });
@@ -596,10 +668,18 @@ describe("SchemaTree objects", () => {
     // The group header collapses on click and offers Edit / Delete.
     fireEvent.click(screen.getByRole("button", { name: /^Archive/ }));
     expect(screen.queryByRole("button", { name: "posts" })).toBeNull();
+    const message = vi.spyOn(toast, "message");
     fireEvent.contextMenu(screen.getByRole("button", { name: /^Archive/ }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete Group" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "posts" })).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /^Archive/ })).toBeNull();
+    // No confirm, but the toast's Undo brings the group back with its members.
+    const [title, options] = message.mock.calls.at(-1)!;
+    expect(title).toBe("Deleted group “Archive”");
+    act(() => (options as unknown as { action: { onClick: () => void } }).action.onClick());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Archive/ })).toHaveTextContent("Archive2"),
+    );
     expect(manual.id).toBeTruthy();
   });
 

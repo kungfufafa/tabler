@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { actions } from "@/features/palette/actions";
 import { formatCombo } from "@/lib/keys/combo";
@@ -7,6 +7,9 @@ import { EMPTY_OVERRIDES } from "@/lib/keys/overrides";
 import { KeyboardProvider } from "@/lib/keys/useShortcuts";
 import { getPrefs, resetPrefsForTests, setPref } from "@/stores/prefs";
 import { ShortcutsSection } from "./ShortcutsSection";
+
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+vi.mock("sonner", () => ({ toast }));
 
 /** jsdom is not macOS: Mod is Ctrl. */
 const mod = { ctrlKey: true };
@@ -121,6 +124,28 @@ describe("ShortcutsSection (keymap editor)", { timeout: 20_000 }, () => {
     fireEvent.click(screen.getByText("Reset All"));
     expect(getPrefs().keymapOverrides).toEqual({});
     expect(screen.getByText("Reset All")).toBeDisabled();
+    // Reset All offers Undo, which brings every custom key back.
+    const [, opts] = toast.success.mock.lastCall as [
+      string,
+      { action: { label: string; onClick: () => void } },
+    ];
+    expect(opts.action.label).toBe("Undo");
+    act(() => opts.action.onClick());
+    expect(getPrefs().keymapOverrides).toEqual({
+      "tab.next": ["Mod+Alt+J", "Mod+Tab"],
+    });
+    expect(screen.getByText("Reset All")).toBeEnabled();
+  });
+
+  it("explains how to record a shortcut above the list", () => {
+    renderSection();
+    const hint = screen.getByText(/Click a shortcut, then press the new keys/);
+    const firstGroup = document.querySelector("section")!;
+    expect(hint).toHaveTextContent(/cancels/);
+    expect(hint).not.toHaveTextContent(/native menu/);
+    expect(
+      hint.compareDocumentPosition(firstGroup) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("does not run actions while recording", () => {

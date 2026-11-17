@@ -11,6 +11,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useSingleHost } from "@/features/export/singleHost";
+import { REVEAL_LABEL } from "@/lib/platform";
 import { closeDonePopup, revealFile, useDoneStore } from "./done";
 
 /** Name of the single-host slot of the popup. */
@@ -18,7 +19,8 @@ const DONE_HOST = "done-popup";
 
 /**
  * The popup after an export or a backup ("Show open containing folder popup after exporting
- * data"): what was written, "Show in Finder" and OK (Return / Esc). Mounted by `NotifyHost`.
+ * data"): what was written, the reveal button ("Show in Finder") and OK (Return / Esc). Mounted
+ * by `NotifyHost`.
  */
 export function DonePopup() {
   const owner = useSingleHost(DONE_HOST);
@@ -32,7 +34,7 @@ export function DonePopup() {
     <AlertDialog open={shown !== null} onOpenChange={(open) => !open && closeDonePopup()}>
       <AlertDialogContent
         className="data-[size=default]:sm:max-w-md"
-        // OK takes Return (Radix would focus the cancel button: Show in Finder).
+        // OK takes Return (Radix would focus the cancel button, the reveal one).
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           ok.current?.focus();
@@ -57,7 +59,7 @@ export function DonePopup() {
                 closeDonePopup();
               }}
             >
-              <FolderOpen /> Show in Finder
+              <FolderOpen /> {REVEAL_LABEL}
             </AlertDialogCancel>
           )}
           <AlertDialogAction ref={ok} size="sm" onClick={closeDonePopup}>

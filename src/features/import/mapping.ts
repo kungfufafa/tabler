@@ -159,6 +159,14 @@ export function statusLine(
   return `${kind} ${source}, table ${n(table)}, matched ${n(matched)}`;
 }
 
+/**
+ * The file name at the end of a picked path, shown until the preview names it. Windows paths use
+ * backslashes, so both separators count.
+ */
+export function fileNameOf(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
 /** A table name from a file name: `Sales Report 2026.csv` → `sales_report_2026`. */
 export function tableNameFromFile(fileName: string): string {
   const stem = fileName.replace(/\.[^.]*$/, "").replace(/\.(csv|tsv|txt|json)$/i, "");

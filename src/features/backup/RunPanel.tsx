@@ -1,7 +1,10 @@
-import { CircleAlert, CircleCheck, TriangleAlert } from "lucide-react";
+import { CircleAlert, CircleCheck, Copy, TriangleAlert } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { writeClipboard } from "@/features/datagrid/clipboard";
 import { cn } from "@/lib/utils";
-import { isErrorLine } from "./logLines";
+import { isErrorLine, outputText } from "./logLines";
 import { basename, formatElapsed } from "./options";
 import { bytesLabel, type BackupRun } from "./store";
 
@@ -66,7 +69,8 @@ export function RunPanel({ run }: { run: BackupRun }) {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
         }}
-        className="border-border bg-surface-2 min-h-0 flex-1 overflow-auto rounded-md border px-2 py-1.5 font-mono text-xs leading-4 whitespace-pre-wrap"
+        // Selectable (the app is user-select: none) so a failing line can go into a search.
+        className="selectable border-border bg-surface-2 min-h-0 flex-1 overflow-auto rounded-md border px-2 py-1.5 font-mono text-xs leading-4 whitespace-pre-wrap"
       >
         {run.command && <div className="text-muted-foreground break-all">$ {run.command}</div>}
         {run.log.map((line, i) => (
@@ -106,14 +110,31 @@ export function RunPanel({ run }: { run: BackupRun }) {
           </span>
         </div>
       )}
-      <div
-        role="status"
-        className="text-muted-foreground flex items-center gap-2 text-xs tabular-nums"
-      >
-        <span>{elapsed}</span>
-        <span>·</span>
-        <span>{bytesLabel(run)}</span>
-        {run.cancelling && <span>· cancelling…</span>}
+      <div className="flex min-h-6 items-center gap-2">
+        <div
+          role="status"
+          className="text-muted-foreground flex items-center gap-2 text-xs tabular-nums"
+        >
+          <span>{elapsed}</span>
+          <span>·</span>
+          <span>{bytesLabel(run)}</span>
+          {run.cancelling && <span>· cancelling…</span>}
+        </div>
+        {(run.command || run.log.length > 0) && (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="ml-auto"
+            onClick={() =>
+              void writeClipboard(outputText(run)).then(
+                () => toast.success("Output copied"),
+                () => toast.error("Could not copy the output"),
+              )
+            }
+          >
+            <Copy aria-hidden /> Copy Output
+          </Button>
+        )}
       </div>
     </div>
   );

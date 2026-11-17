@@ -8,6 +8,7 @@ import { useConnectionsStore } from "@/stores/connections";
 import { DEFAULT_PREFS, resetPrefsForTests } from "@/stores/prefs";
 import { NotifyHost } from "@/features/notify/NotifyHost";
 import { mockBrewInstalls } from "@/lib/ipc/mock/backup";
+import { REVEAL_LABEL } from "@/lib/platform";
 import { BackupHost } from "./BackupHost";
 import { BACKUP_OPTIONS_KEY, loadBackupOptions } from "./options";
 import { openBackup, resetBackupStore, useBackupStore } from "./store";
@@ -118,7 +119,7 @@ describe("Backup window", () => {
     expect(req.path).toMatch(/^\/Users\/me\/Backups\/tabler_dev_.*\.sql\.gz$/);
     expect(toast.success.mock.calls[0]![0]).toBe("Backed up tabler_dev");
     const action = (toast.success.mock.calls[0]![1] as { action: { label: string } }).action;
-    expect(action.label).toBe("Show in Finder");
+    expect(action.label).toBe(REVEAL_LABEL);
     // The window closed; the options are remembered for PostgreSQL.
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(loadBackupOptions("postgres")).toMatchObject({
@@ -170,7 +171,7 @@ describe("Backup window", () => {
   it("cancels a running backup", async () => {
     const user = userEvent.setup();
     setup();
-    const dialog = await openWindow({ mode: "backup", profileId: "p-local-pg", database: null });
+    let dialog = await openWindow({ mode: "backup", profileId: "p-local-pg", database: null });
     await within(dialog).findByText("PostgreSQL 17.6 — pg_dump");
     vi.spyOn(window, "prompt").mockReturnValue("/Users/me/Backups");
     let reject: (e: unknown) => void = () => {};
@@ -189,6 +190,26 @@ describe("Backup window", () => {
     await user.click(within(dialog).getByRole("button", { name: /Start Backup/ }));
     expect(await within(dialog).findByText("Backing up tabler_dev")).toBeInTheDocument();
     expect(within(dialog).getByRole("status")).toHaveTextContent("2.0 KB written");
+    // The output can be selected and copied.
+    expect(within(dialog).getByRole("log")).toHaveClass("selectable");
+    expect(within(dialog).getByRole("button", { name: /Copy Output/ })).toBeInTheDocument();
+
+    // Closed while it runs, the window leaves a progress toast; Show brings it back.
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(toast.loading).toHaveBeenLastCalledWith(
+      "Backing up tabler_dev",
+      expect.objectContaining({ id: "backup-progress", description: "2.0 KB written" }),
+    );
+    const [, opts] = toast.loading.mock.lastCall as unknown as [
+      string,
+      { action: { onClick: () => void } },
+    ];
+    act(() => opts.action.onClick());
+    dialog = await screen.findByRole("dialog");
+    expect(toast.dismiss).toHaveBeenCalledWith("backup-progress");
+    expect(within(dialog).getByText("Backing up tabler_dev")).toBeInTheDocument();
+
     await user.click(within(dialog).getByRole("button", { name: "Cancel Backup" }));
     expect(cancel).toHaveBeenCalledWith(useBackupStore.getState().run!.jobId);
     await act(async () => reject({ code: "CANCELLED", message: "query cancelled" }));
@@ -353,7 +374,7 @@ describe("dump binaries and the done popup", () => {
     const popup = await screen.findByRole("alertdialog", {}, { timeout: 5000 });
     expect(within(popup).getByText("Backup completed")).toBeInTheDocument();
     expect(within(popup).getByText("Backed up tabler_dev")).toBeInTheDocument();
-    expect(within(popup).getByRole("button", { name: "Show in Finder" })).toBeInTheDocument();
+    expect(within(popup).getByRole("button", { name: REVEAL_LABEL })).toBeInTheDocument();
     expect(toast.success).not.toHaveBeenCalled();
   });
 });

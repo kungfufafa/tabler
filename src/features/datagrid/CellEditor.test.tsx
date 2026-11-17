@@ -308,3 +308,65 @@ describe("CellEditor ▸ ⌘S stages the edit and commits the tab", () => {
     expect(commitTab).not.toHaveBeenCalled();
   });
 });
+
+describe("CellEditor: leaving an edit that does not parse", () => {
+  const mount = (onDropInvalid: (text: string, error: string) => void) => {
+    const onCommit = vi.fn();
+    const onCancel = vi.fn();
+    render(
+      <CellEditor
+        col={col("int")}
+        previous={{ t: "int", v: 3 }}
+        initialText="12a"
+        left={0}
+        top={0}
+        width={120}
+        height={28}
+        onCommit={onCommit}
+        onCancel={onCancel}
+        onDropInvalid={onDropInvalid}
+      />,
+    );
+    return { onCommit, onCancel, input: screen.getByRole("textbox", { name: "Edit c" }) };
+  };
+
+  it("a blur closes the editor and hands over the typed text and the error", () => {
+    const onDropInvalid = vi.fn();
+    const { onCommit, onCancel, input } = mount(onDropInvalid);
+    fireEvent.blur(input);
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(onDropInvalid).toHaveBeenCalledOnce();
+    expect(onDropInvalid).toHaveBeenCalledWith("12a", expect.any(String));
+  });
+
+  it("⎋ throws the text away on purpose: nothing is handed over", () => {
+    const onDropInvalid = vi.fn();
+    const { input } = mount(onDropInvalid);
+    fireEvent.keyDown(input, { key: "Escape" });
+    fireEvent.blur(input);
+    expect(onDropInvalid).not.toHaveBeenCalled();
+  });
+});
+
+describe("CellEditor: JSON dialog dirty guard", () => {
+  it("⎋ closes an unchanged dialog at once, but asks before dropping edited JSON", async () => {
+    const { onCancel } = renderEditor(col("json"), { t: "json", v: '{"a":1}' }, '{"a":1}');
+    const dialog = screen.getByRole("dialog");
+    const area = within(dialog).getByRole("textbox");
+    fireEvent.change(area, { target: { value: '{"a": 2}' } });
+    fireEvent.keyDown(area, { key: "Escape" });
+    const prompt = await screen.findByRole("alertdialog");
+    expect(prompt).toHaveTextContent("Discard unsaved changes?");
+    expect(onCancel).not.toHaveBeenCalled();
+    fireEvent.click(within(prompt).getByRole("button", { name: "Discard" }));
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("Cancel on an unchanged dialog closes without asking", () => {
+    const { onCancel } = renderEditor(col("json"), { t: "json", v: '{"a":1}' }, '{"a":1}');
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+});

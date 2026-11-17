@@ -19,8 +19,9 @@ const CONFIRM_COMBO = "Mod+Enter";
 
 /**
  * Asks before a run from the SQL editor replaces results that hold uncommitted edits (the
- * `confirmRerunDiscard` question). ⌘↩ confirms, like running again; Esc cancels and leaves the
- * edits staged. Mount once.
+ * `confirmRerunDiscard` question). Commit and Run is the way on that keeps them: it commits as ⌘S
+ * does, through its Preview sheet, then runs. ⌘↩ discards and runs, like running again; Esc
+ * cancels and leaves the edits staged. Mount once.
  */
 export function RerunConfirmDialog() {
   const live = useRerunConfirmStore((s) => s.request);
@@ -36,7 +37,7 @@ export function RerunConfirmDialog() {
         onKeyDown={(e) => {
           if (comboFromEvent(e) !== CONFIRM_COMBO) return;
           e.preventDefault();
-          answerRerunConfirm(true);
+          answerRerunConfirm("discard");
         }}
       >
         <AlertDialogHeader>
@@ -53,10 +54,13 @@ export function RerunConfirmDialog() {
           <AlertDialogAction
             variant="destructive"
             size="sm"
-            onClick={() => answerRerunConfirm(true)}
+            onClick={() => answerRerunConfirm("discard")}
           >
             Discard and Run
             <KbdHint combo={CONFIRM_COMBO} />
+          </AlertDialogAction>
+          <AlertDialogAction size="sm" onClick={() => answerRerunConfirm("commit")}>
+            Commit and Run…
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

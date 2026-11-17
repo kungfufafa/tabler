@@ -9,19 +9,17 @@ import {
   Settings2,
   Table2,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { Kbd } from "@/components/Kbd";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChartView } from "@/features/charts/ChartView";
@@ -53,7 +51,7 @@ import { setPref, usePrefs, type ResultViewMode } from "@/stores/prefs";
 import { getQueryTab, updateQueryTab, useQueryTabField, type ResultPane } from "@/stores/queryTabs";
 import { resultData, useResultRowCount } from "@/stores/resultData";
 import { useTabsStore } from "@/stores/tabs";
-import { exportQuery, runQuery } from "./controller";
+import { closePlan, exportQuery, runQuery } from "./controller";
 import { HISTORY_KEY } from "./historyGroups";
 import { MessagesView } from "./MessagesView";
 import { installNoticeNotifications } from "./notices";
@@ -121,20 +119,28 @@ function ResultTab({
   label,
   active,
   pinned = false,
+  counts,
   onSelect,
 }: {
   info: ResultSetInfo;
   label: string;
   active: boolean;
   pinned?: boolean;
+  /**
+   * Rows and time in the label: only when several result tabs need telling apart. A lone result
+   * keeps them in its footer, and in the tab's tooltip.
+   */
+  counts: boolean;
   onSelect: () => void;
 }) {
   const rows = useResultRowCount(info.id);
   const pending = useResultsStore((s) => stagingOf(s, info.id).changes.size);
+  const full = resultTabText(label, rows, info.durationMs);
+  const title = [pinned && "Pinned result", !counts && full].filter(Boolean).join(": ");
   return (
-    <PaneTab active={active} onSelect={onSelect} title={pinned ? "Pinned result" : undefined}>
+    <PaneTab active={active} onSelect={onSelect} title={title || undefined}>
       {pinned && <Pin className="size-3.5" aria-label="Pinned" />}
-      <span className="tabular-nums">{resultTabText(label, rows, info.durationMs)}</span>
+      <span className="tabular-nums">{counts ? full : label}</span>
       {info.truncated && <TriangleAlert className="text-warning size-3" aria-label="Truncated" />}
       {pending > 0 && (
         <span
@@ -177,18 +183,11 @@ function ResultsEmpty() {
   );
 }
 
-/** Results header ▸ Result View Mode, row numbers and Pin Result. */
-function ResultsMenu({
-  mode,
-  pinTarget,
-  onTogglePin,
-}: {
-  mode: ResultViewMode;
-  /** The result Pin Result acts on, and whether it is pinned. */
-  pinTarget: { pinned: boolean } | null;
-  onTogglePin: () => void;
-}) {
-  const rowNumbers = usePrefs((p) => p.resultRowNumbers);
+/**
+ * Results header ▸ Result View Mode. Pin Result and row numbers are the result footer's buttons
+ * (one place each, as in TablePlus).
+ */
+function ResultsMenu({ mode }: { mode: ResultViewMode }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -209,16 +208,6 @@ function ResultsMenu({
             Append All Results in One Tab
           </DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>
-        <DropdownMenuSeparator />
-        <DropdownMenuCheckboxItem
-          checked={rowNumbers}
-          onCheckedChange={(checked) => setPref("resultRowNumbers", checked === true)}
-        >
-          Show Row Numbers
-        </DropdownMenuCheckboxItem>
-        <DropdownMenuItem disabled={!pinTarget} onSelect={onTogglePin}>
-          {pinTarget?.pinned ? "Unpin Result" : "Pin Result"}
-        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -417,6 +406,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
   const activeTab: ResultPane = append && activeResult ? results[0]!.id : active;
   const select = (p: ResultPane) => updateQueryTab(tabId, { pane: p });
   const errors = run ? summarize(run).errors : 0;
+  const counts = pins.length + (append ? 0 : results.length) > 1;
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -501,6 +491,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
               info={p.info}
               label={p.label}
               pinned
+              counts={counts}
               active={active === p.id}
               onSelect={() => select(p.id)}
             />
@@ -520,6 +511,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
                 key={r.id}
                 info={r}
                 label={`Result ${runIndex(r)}`}
+                counts={counts}
                 active={active === r.id}
                 onSelect={() => select(r.id)}
               />
@@ -532,9 +524,32 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
             </PaneTab>
           )}
           {plan && (
-            <PaneTab active={active === "plan"} onSelect={() => select("plan")}>
-              Plan
-            </PaneTab>
+            <div
+              className="flex shrink-0 items-stretch"
+              // Delete on the focused Plan tab closes it too (the × is out of the tab order).
+              onKeyDown={(e) => {
+                if (e.key !== "Delete" && e.key !== "Backspace") return;
+                e.preventDefault();
+                closePlan(tabId);
+              }}
+            >
+              <PaneTab active={active === "plan"} onSelect={() => select("plan")}>
+                Plan
+              </PaneTab>
+              {/* The last plan stays through later runs until it is closed here. */}
+              {plan.status !== "running" && (
+                <button
+                  type="button"
+                  aria-label="Close Plan"
+                  title="Close Plan"
+                  tabIndex={-1}
+                  onClick={() => closePlan(tabId)}
+                  className="text-muted-foreground hover:text-foreground hover:bg-accent my-auto flex size-5 items-center justify-center rounded-sm transition-colors outline-none"
+                >
+                  <X className="size-3" />
+                </button>
+              )}
+            </div>
           )}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -555,11 +570,7 @@ export function ResultsPane({ tabId, dialect }: { tabId: string; dialect: Dialec
           >
             <Search className="size-3.5" />
           </button>
-          <ResultsMenu
-            mode={mode}
-            pinTarget={activeShown ? { pinned: activeShown.pin !== null } : null}
-            onTogglePin={() => activeShown && togglePin(activeShown)}
-          />
+          <ResultsMenu mode={mode} />
         </div>
       </div>
       <div className="min-h-0 flex-1" role="tabpanel">

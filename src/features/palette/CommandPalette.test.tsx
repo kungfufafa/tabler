@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetThemesForTests, useThemes } from "@/features/appearance/themesStore";
+import { useConnectionDialog } from "@/features/connections/store";
 import { emptyStaging, insertRow } from "@/features/staging/model";
 import { useStructureStore } from "@/features/structure/store";
 import { useDatabaseSwitchStore } from "@/features/sidebar/switchDatabase";
@@ -850,6 +851,17 @@ describe("CommandPalette", () => {
         expect.stringMatching(/^Local PG/),
         expect.stringMatching(/^Staging MySQL/),
       ]);
+    });
+
+    it("offers New Connection… when Switch Connection finds nothing", async () => {
+      useConnectionDialog.setState({ open: false, profile: null, prefill: null });
+      renderPalette(undefined, { mode: "connections", setup: withDatabases });
+      type("zzzz");
+      expect(screen.getByText("No matches")).toBeInTheDocument();
+      expect(optionTexts()).toEqual(["New Connection…"]);
+      fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter", code: "Enter" });
+      await waitFor(() => expect(useConnectionDialog.getState().open).toBe(true));
+      expect(useUiStore.getState().view).toBe("launcher");
     });
 
     it("leaves Recent out of the narrowed lists", () => {

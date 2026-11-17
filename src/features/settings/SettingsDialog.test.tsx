@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { actions, type ActionId } from "@/features/palette/actions";
 import { resetMockSettings } from "@/lib/ipc/mock/settings";
 import { KeyboardProvider } from "@/lib/keys/useShortcuts";
+import { SECRET_STORE } from "@/lib/platform";
 import { DEFAULT_PREFS, getPrefs, resetPrefsForTests, usePrefsStore } from "@/stores/prefs";
 import { useUiStore } from "@/stores/ui";
 import { SettingsDialog } from "./SettingsDialog";
@@ -85,7 +86,7 @@ describe("SettingsDialog", () => {
 
     fireEvent.keyDown(dialog, { code: "Digit3", key: "3", ctrlKey: true });
     const timeout = await within(dialog).findByRole("spinbutton", { name: "Connect timeout" });
-    expect(within(dialog).getByText(/macOS Keychain/)).toBeInTheDocument();
+    expect(within(dialog).getByText(new RegExp(SECRET_STORE))).toBeInTheDocument();
     await user.clear(timeout);
     await user.type(timeout, "999{Enter}");
     expect(getPrefs().connectTimeout).toBe(300);

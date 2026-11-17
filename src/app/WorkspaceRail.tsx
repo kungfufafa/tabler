@@ -8,7 +8,9 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { useQueryClient } from "@tanstack/react-query";
 import { Lock, Plus } from "lucide-react";
+import { KbdHint } from "@/components/KbdHint";
 import {
   ContextMenu,
   ContextMenuCheckboxItem,
@@ -25,6 +27,8 @@ import { actions } from "@/features/palette/actions";
 import { disconnectGuarded } from "@/features/palette/commands";
 import { openProfileInNewWindow } from "@/features/tabs/windowHandoff";
 import { moveWorkspace, useRailOrder, workspaceInitials } from "@/features/tabs/workspaces";
+import { reconnectConnection, useReconnectInFlight } from "@/hooks/useConnectionEvents";
+import { shortcutFor, useKeymapVersion } from "@/lib/keys/keymap";
 import { accentColor } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
@@ -49,7 +53,13 @@ function RailItem({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: connectionId,
   });
+  const qc = useQueryClient();
+  const reconnecting = useReconnectInFlight(connectionId);
+  // Re-render with the user's bindings (the tooltip shows them).
+  useKeymapVersion();
   if (!conn) return null;
+  const next = shortcutFor("workspace.next");
+  const prev = shortcutFor("workspace.prev");
   const { info } = conn;
   const accent = accentColor(info.color);
   const problem = conn.status === "lost" || conn.status === "reconnecting";
@@ -170,6 +180,18 @@ function RailItem({
                 .join(" · ")}
             </span>
           )}
+          {problem && (
+            <span className="opacity-70">
+              {conn.status === "lost" ? "Connection lost" : "Reconnecting…"}
+            </span>
+          )}
+          {(next || prev) && (
+            <span data-slot="rail-switch-keys" className="flex items-center gap-1 opacity-70">
+              Switch workspaces
+              {prev && <KbdHint combo={prev} />}
+              {next && <KbdHint combo={next} />}
+            </span>
+          )}
         </TooltipContent>
       </Tooltip>
       <ContextMenuContent className="min-w-44">
@@ -202,6 +224,15 @@ function RailItem({
         >
           Open in New Window
         </ContextMenuItem>
+        {/* The amber dot's fix, where the user right-clicks it (TablePlus: Connection ▸ Reconnect). */}
+        {problem && (
+          <ContextMenuItem
+            disabled={reconnecting}
+            onSelect={() => void reconnectConnection(connectionId, qc)}
+          >
+            {reconnecting ? "Reconnecting…" : "Reconnect"}
+          </ContextMenuItem>
+        )}
         <ContextMenuItem onSelect={() => onDisconnect(connectionId)}>Disconnect</ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

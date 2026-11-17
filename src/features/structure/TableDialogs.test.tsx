@@ -171,6 +171,28 @@ describe("sidebar table dialogs", () => {
     await waitFor(() => expect(document.querySelector("pre")).toHaveTextContent(/CREATE TABLE/));
   });
 
+  it("New table closes at once on Escape while untouched", async () => {
+    await setup(() => ({ kind: "create", schema: "public" }));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("New table with typed work asks Discard / Keep Editing on Escape and Cancel", async () => {
+    await setup(() => ({ kind: "create", schema: "public" }));
+    fireEvent.click(screen.getByRole("button", { name: /Add Column/ }));
+    fireEvent.change(screen.getByLabelText("Column 2 name"), { target: { value: "body" } });
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    const ask = await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" });
+    expect(ask).toHaveTextContent("the new table");
+    fireEvent.click(screen.getByRole("button", { name: "Keep Editing" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(screen.getByLabelText("Column 2 name")).toHaveValue("body");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
   it("New table cannot be dismissed while CREATE runs", async () => {
     let finish!: (r: Awaited<ReturnType<typeof ipc.ddl.apply>>) => void;
     const apply = vi
