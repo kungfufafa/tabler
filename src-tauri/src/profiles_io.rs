@@ -12,7 +12,7 @@
 //!
 //! Pure: no Tauri, app DB or Keychain access (see `commands::profiles` for those).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::num::NonZeroU32;
 
 use aws_lc_rs::{aead, pbkdf2, rand};
@@ -141,6 +141,14 @@ pub struct Payload {
     /// preview, never imported, never written.
     #[serde(skip)]
     pub skipped: Vec<SkippedConnection>,
+    /// Notes the import preview shows on a connection (by its id in the file): what a TablePlus
+    /// export carried that does not come across as it was. Never written.
+    #[serde(skip)]
+    pub notes: BTreeMap<Uuid, Vec<String>>,
+    /// The SSH private keys a TablePlus export carried, by connection id in the file: the import
+    /// writes each to a key file of the new profile. Never written.
+    #[serde(skip)]
+    pub ssh_keys: BTreeMap<Uuid, String>,
 }
 
 impl Payload {
@@ -187,6 +195,8 @@ impl From<RawPayload> for Payload {
             groups: raw.groups,
             connections,
             skipped,
+            notes: BTreeMap::new(),
+            ssh_keys: BTreeMap::new(),
         }
     }
 }
@@ -561,6 +571,11 @@ pub fn preview(payload: &Payload, existing: &[ConnectionProfile]) -> Vec<ImportP
             duplicate_name: names.contains(&name_key(&c.profile.name)),
             has_password: c.secrets.password.is_some(),
             has_ssh_secrets: c.secrets.has_ssh(),
+            notes: payload
+                .notes
+                .get(&c.profile.id)
+                .cloned()
+                .unwrap_or_default(),
         })
         .collect()
 }
@@ -708,6 +723,8 @@ mod tests {
                 },
             ],
             skipped: Vec::new(),
+            notes: BTreeMap::new(),
+            ssh_keys: BTreeMap::new(),
         }
     }
 

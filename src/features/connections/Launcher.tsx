@@ -533,6 +533,11 @@ export function Launcher() {
     icon: Import,
     run: () => void startImportConnections(),
   };
+  const importTablePlusItem: MenuEntry = {
+    kind: "item",
+    label: "Import from TablePlus…",
+    run: () => void startImportConnections("tableplus"),
+  };
   const backup = (mode: "backup" | "restore") =>
     openBackup({ mode, profileId: selected?.id ?? null, database: null });
   const backupItems: MenuEntry[] = [
@@ -572,6 +577,7 @@ export function Launcher() {
     sortMenu,
     separator,
     importItem,
+    importTablePlusItem,
     exportMenu(selected, groupOf(selected)),
     separator,
     ...backupItems,
@@ -984,6 +990,9 @@ export function Launcher() {
             </WelcomeAction>
             <WelcomeAction icon={Import} onClick={() => void startImportConnections()}>
               Import Connections…
+            </WelcomeAction>
+            <WelcomeAction icon={Import} onClick={() => void startImportConnections("tableplus")}>
+              Import from TablePlus…
             </WelcomeAction>
           </nav>
           <nav

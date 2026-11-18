@@ -78,6 +78,7 @@ Built from the public-source checklist in [`research/tableplus-functional-spec.m
 | Safe mode levels Silent / Alert 1 / Alert 2 / Safe 1 / Safe 2, per connection (§1.12, §9) | toolbar lock menu, alert and password prompts on every send path, default level in Security | ✅     |
 | Connection tag, colour, URL import, Copy as URL (§1.2, §1.10)                             | done in the UX pass; Copy as URL also carries `env` / `safeModeLevel`                       | ✅     |
 | Import / export connections, optionally with passwords and a file password (§1.9)         | `.tablerconnections`, AES-256-GCM + PBKDF2 when a file password is set                      | ✅     |
+| Migrating from TablePlus: its `.tableplusconnection` exports (§1.9)                       | Import from TablePlus… reads them (RNCryptor v3 + JSON, `src-tauri/src/tableplus/`)         | ✅     |
 | Groups: New Group…, drag in / out, rename, delete, export a group (§1.8)                  | persisted group list with nested `A / B / C` paths, 24 icons or an image of your own        | ✅     |
 | Password: Store in keychain / Ask every time / No password (§1.2)                         | same (Command Line / IAM: todo)                                                             | 🟡     |
 | SSL Key… / Cert… / CA Cert…, Bootstrap commands… (§1.2, §1.6)                             | same; SQLite runs bootstrap SQL too                                                         | ✅     |

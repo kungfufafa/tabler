@@ -28,6 +28,7 @@ pub mod passcode;
 pub mod plugins;
 pub mod process;
 pub mod profiles_io;
+pub mod tableplus;
 pub mod query_files;
 pub mod recent;
 pub mod secrets;

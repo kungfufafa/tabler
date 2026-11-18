@@ -13,12 +13,13 @@ use crate::error::AppError;
 use crate::profiles_io::{self, ExportedConnection, ExportedSecrets, Payload, ReadOutcome};
 use crate::secrets::{ExtraSecrets, SecretKind};
 use crate::state::AppState;
+use crate::tableplus;
 use crate::tunnel::{KeyboardInteractive, SshPromptPurpose, TunnelAuth, TunnelHandle};
 use crate::types::driver::ExtraSecret;
 use crate::types::profile::{
-    ConnectionProfile, ConnectionTag, ConnectionsFilePreview, Driver, ExportConnectionsRequest,
-    PasswordMode, ProfileInput, SecretStatus, SshAuth, SshConfig, SshPasswordMode, TAG_NAME_MAX,
-    TestResult,
+    ConnectionProfile, ConnectionTag, ConnectionsFilePreview, ConnectionsFileSource, Driver,
+    ExportConnectionsRequest, PasswordMode, ProfileInput, SecretStatus, SshAuth, SshConfig,
+    SshPasswordMode, TAG_NAME_MAX, TestResult,
 };
 
 /// Settings key of the connection group names (so empty groups exist): a JSON array of strings.
@@ -205,9 +206,38 @@ pub async fn run_save(
 
 #[tauri::command]
 pub async fn delete_profile(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
+    let key_path = state
+        .appdb
+        .get_profile(id)?
+        .and_then(|p| p.ssh)
+        .and_then(|s| s.key_path);
     state.appdb.delete_profile(id)?;
     state.secrets.delete_all(id).await?;
     state.set_session_password(id, None);
+    if let Some(path) = key_path {
+        remove_imported_ssh_key(&state, &path)?;
+    }
+    Ok(())
+}
+
+/// Deletes an SSH key file an import wrote ([`write_ssh_key`]) once no saved connection uses
+/// it any more (Duplicate shares the path). Files the user chose themselves are never touched.
+fn remove_imported_ssh_key(state: &AppState, path: &str) -> Result<(), AppError> {
+    let Some(dir) = crate::mcp::paths::default_app_data_dir().map(|d| d.join(SSH_KEYS_DIR)) else {
+        return Ok(());
+    };
+    let file = std::path::Path::new(path);
+    if file.parent() != Some(dir.as_path()) {
+        return Ok(());
+    }
+    let in_use = state
+        .appdb
+        .list_profiles()?
+        .iter()
+        .any(|p| p.ssh.as_ref().and_then(|s| s.key_path.as_deref()) == Some(path));
+    if !in_use && let Err(e) = std::fs::remove_file(file) {
+        log::warn!("could not delete the imported SSH key {path}: {e}");
+    }
     Ok(())
 }
 
@@ -569,6 +599,40 @@ fn io_error(path: &str, e: std::io::Error) -> AppError {
     AppError::Io(format!("{path}: {e}"))
 }
 
+/// Where imported SSH keys are kept, under the app data folder.
+const SSH_KEYS_DIR: &str = "ssh-keys";
+
+/// Saves the SSH private key a TablePlus export carried (profiles keep a key path, TablePlus
+/// keeps the key itself) as `<app data>/ssh-keys/<profile id>`, readable by the user only.
+/// Returns its path.
+async fn write_ssh_key(profile_id: Uuid, key: &str) -> Result<String, AppError> {
+    let dir = crate::mcp::paths::default_app_data_dir()
+        .ok_or_else(|| AppError::internal("cannot find the app data folder"))?
+        .join(SSH_KEYS_DIR);
+    let path = dir.join(profile_id.to_string());
+    let shown = path.display().to_string();
+    let key = key.to_string();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let mut folder = std::fs::DirBuilder::new();
+        folder.recursive(true);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+            folder.mode(0o700);
+            options.mode(0o600);
+        }
+        folder.create(&dir)?;
+        use std::io::Write as _;
+        options.open(&path)?.write_all(key.as_bytes())
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+    .map_err(|e| io_error(&shown, e))?;
+    Ok(shown)
+}
+
 /// "Export Connections ▸ …": writes the chosen profiles (in list order) to a
 /// `.tablerconnections` file. Returns how many were written.
 #[tauri::command]
@@ -634,6 +698,8 @@ pub async fn run_export(state: &AppState, req: ExportConnectionsRequest) -> Resu
         groups: profiles_io::export_groups(&stored_group_records(state)?, &req.groups, &used),
         connections,
         skipped: Vec::new(),
+        notes: Default::default(),
+        ssh_keys: Default::default(),
     };
     let count = payload.connections.len();
     // The key derivation takes a moment: off the async workers.
@@ -651,16 +717,26 @@ pub async fn run_export(state: &AppState, req: ExportConnectionsRequest) -> Resu
     Ok(count as u32)
 }
 
+/// Reads a Tabler connections file or a TablePlus export (told apart by their content, whatever
+/// the file is called).
 async fn read_connections_file(
     path: &str,
     password: Option<&str>,
-) -> Result<ReadOutcome, AppError> {
+) -> Result<(ConnectionsFileSource, ReadOutcome), AppError> {
     let bytes = tokio::fs::read(path).await.map_err(|e| io_error(path, e))?;
     // The key derivation of an encrypted file takes a moment: off the async workers.
     let password = password.map(str::to_owned);
-    tokio::task::spawn_blocking(move || profiles_io::read(&bytes, password.as_deref()))
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?
+    tokio::task::spawn_blocking(move || {
+        if tableplus::is_export(&bytes) {
+            let outcome = tableplus::read(&bytes, password.as_deref())?;
+            Ok((ConnectionsFileSource::Tableplus, outcome))
+        } else {
+            let outcome = profiles_io::read(&bytes, password.as_deref())?;
+            Ok((ConnectionsFileSource::Tabler, outcome))
+        }
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
 }
 
 /// "Import Connections…", step 1: what the file holds (asks for the password of an encrypted
@@ -679,8 +755,10 @@ pub async fn inspect_file(
     path: &str,
     password: Option<&str>,
 ) -> Result<ConnectionsFilePreview, AppError> {
-    Ok(match read_connections_file(path, password).await? {
+    let (source, outcome) = read_connections_file(path, password).await?;
+    Ok(match outcome {
         ReadOutcome::NeedsPassword => ConnectionsFilePreview {
+            source,
             encrypted: true,
             needs_password: true,
             groups: Vec::new(),
@@ -688,6 +766,7 @@ pub async fn inspect_file(
             skipped: Vec::new(),
         },
         ReadOutcome::Opened { payload, encrypted } => ConnectionsFilePreview {
+            source,
             encrypted,
             needs_password: false,
             connections: profiles_io::preview(&payload, &state.appdb.list_profiles()?),
@@ -720,16 +799,29 @@ pub async fn run_import(
     ids: &[Uuid],
     keep_password_commands: &[Uuid],
 ) -> Result<Vec<ConnectionProfile>, AppError> {
-    let ReadOutcome::Opened { payload, .. } = read_connections_file(path, password).await? else {
+    let (_, ReadOutcome::Opened { payload, .. }) = read_connections_file(path, password).await?
+    else {
         return Err(AppError::InvalidInput(
             "Enter the file password to import these connections".into(),
         ));
     };
     let mut imported = Vec::new();
-    for (mut profile, secrets) in profiles_io::plan_import(&payload, ids, keep_password_commands) {
+    // `plan_import` gives the chosen connections new ids, in file order: their ids in the file.
+    let file_ids: Vec<Uuid> = payload
+        .connections
+        .iter()
+        .map(|c| c.profile.id)
+        .filter(|id| ids.contains(id))
+        .collect();
+    let planned = profiles_io::plan_import(&payload, ids, keep_password_commands);
+    for ((mut profile, secrets), file_id) in planned.into_iter().zip(file_ids) {
         // A bootstrap CLI script runs through the user's shell before every connect: never taken
         // from a file (the import preview does not show it).
         profile.options.bootstrap_script = None;
+        // An SSH key a TablePlus export carried: a key file of the profile's own.
+        if let (Some(key), Some(ssh)) = (payload.ssh_keys.get(&file_id), profile.ssh.as_mut()) {
+            ssh.key_path = Some(write_ssh_key(profile.id, key).await?);
+        }
         let stored = state.appdb.upsert_profile(&profile)?;
         let id = stored.id;
         if stored.options.password_mode() == PasswordMode::Keychain
@@ -1110,6 +1202,63 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(only_beta.len(), 1);
+    }
+
+    /// A file TablePlus for Windows exported (written by its own code, see the fixture's README)
+    /// goes through the same preview and import as a Tabler file.
+    #[tokio::test]
+    async fn imports_a_tableplus_export() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/tableplus/windows-export.tableplusconnection"
+        );
+        let target = state();
+        let locked = inspect_file(&target, path, None).await.unwrap();
+        assert_eq!(locked.source, ConnectionsFileSource::Tableplus);
+        assert!(locked.needs_password);
+        assert!(inspect_file(&target, path, Some("nope")).await.is_err());
+        let preview = inspect_file(&target, path, Some("tabler-test"))
+            .await
+            .unwrap();
+        assert_eq!(preview.source, ConnectionsFileSource::Tableplus);
+        assert_eq!(preview.groups, ["Clients", "Clients / Reports"]);
+        let ids: Vec<Uuid> = preview.connections.iter().map(|c| c.profile.id).collect();
+        assert_eq!(ids.len(), 3);
+
+        let imported = run_import(&target, path, Some("tabler-test"), &ids, &[])
+            .await
+            .unwrap();
+        let by_name = |n: &str| imported.iter().find(|p| p.name == n).unwrap();
+        let pg = by_name("Orders (prod)");
+        assert_eq!(pg.group.as_deref(), Some("Clients"));
+        assert_eq!(pg.ssh.as_ref().unwrap().host, "bastion.example.test");
+        assert_eq!(
+            target
+                .secrets
+                .get(pg.id, SecretKind::DbPassword)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("pg-s3cret")
+        );
+        assert_eq!(
+            target
+                .secrets
+                .get(pg.id, SecretKind::SshPassword)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("ssh-s3cret")
+        );
+        assert_eq!(
+            by_name("Sample file").group.as_deref(),
+            Some("Clients / Reports")
+        );
+        assert_eq!(target.appdb.list_profiles().unwrap().len(), 3);
+        assert_eq!(
+            stored_groups(&target).unwrap(),
+            ["Clients", "Clients / Reports"]
+        );
     }
 
     /// Regression: one saved connection this build cannot read (a newer Tabler saved it) broke

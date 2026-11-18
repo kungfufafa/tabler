@@ -1,6 +1,7 @@
 import type { ConnectionProfile } from "../bindings/ConnectionProfile";
 import type { ConnectionsFilePreview } from "../bindings/ConnectionsFilePreview";
 import type { ExportConnectionsRequest } from "../bindings/ExportConnectionsRequest";
+import type { SkippedConnection } from "../bindings/SkippedConnection";
 import { profile } from "./fixtures";
 import { mockProfiles, mockSecrets } from "./handlers";
 import { mockError, mockInvoke, registerMock } from "./transport";
@@ -18,6 +19,8 @@ interface MockFileEntry {
   profile: ConnectionProfile;
   password: string | null;
   sshSecrets: boolean;
+  /** What the preview notes on it (TablePlus settings that do not come across as they were). */
+  notes?: string[];
 }
 
 interface MockGroup {
@@ -40,6 +43,10 @@ function imageUri(raw: unknown): string | undefined {
 }
 
 interface MockFile {
+  /** A TablePlus export (`.tableplusconnection`) rather than a Tabler file. */
+  tableplus?: boolean;
+  /** Its connections Tabler cannot import (a TablePlus export's unsupported databases). */
+  skipped?: SkippedConnection[];
   password: string | null;
   groups: MockGroup[];
   connections: MockFileEntry[];
@@ -101,6 +108,8 @@ async function storedGroups(): Promise<MockGroup[]> {
 const GROUPS_SETTING = "connectionGroups";
 export const DEMO_IMPORT_PATH = "/Users/me/Downloads/team.tablerconnections";
 export const DEMO_IMPORT_PASSWORD = "tabler";
+export const DEMO_TABLEPLUS_PATH = "/Users/me/Downloads/TablePlus.tableplusconnection";
+export const DEMO_TABLEPLUS_PASSWORD = "tableplus";
 
 const files = new Map<string, MockFile>();
 
@@ -165,6 +174,67 @@ function seedDemoFile(): void {
         password: "secret",
         sshSecrets: false,
       },
+    ],
+  });
+  // A TablePlus export, as `tableplus::read` turns it into a connections file.
+  files.set(DEMO_TABLEPLUS_PATH, {
+    tableplus: true,
+    password: DEMO_TABLEPLUS_PASSWORD,
+    groups: [{ path: "Clients", icon: null }],
+    connections: [
+      {
+        profile: {
+          ...profile(
+            {
+              id: "tp-orders",
+              name: "Orders (prod)",
+              driver: "postgres",
+              color: "#A3793E",
+              group: "Clients",
+              host: "db.example.com",
+              port: 5433,
+              user: "app",
+              database: "orders",
+              ssl: "require",
+            },
+            "production",
+          ),
+          ssh: {
+            host: "bastion.example.com",
+            port: 22,
+            user: "deploy",
+            auth: "key",
+            keyPath: null,
+            localPort: null,
+            keepaliveSecs: null,
+            passwordMode: null,
+          },
+        },
+        password: "orders-secret",
+        sshSecrets: false,
+        notes: [
+          "Choose the SSH private key again after importing: TablePlus kept it as id_ed25519.",
+        ],
+      },
+      {
+        profile: profile(
+          {
+            id: "tp-shop",
+            name: "Shop",
+            driver: "mysql",
+            color: "#007F3D",
+            host: "127.0.0.1",
+            user: "root",
+            database: "shop",
+          },
+          "local",
+        ),
+        password: null,
+        sshSecrets: false,
+      },
+    ],
+    skipped: [
+      { name: "Legacy ERP", reason: "is an Oracle connection, which Tabler does not support" },
     ],
   });
 }
@@ -248,10 +318,19 @@ registerMock("export_connections", async ({ request }) => {
 
 registerMock("inspect_connections_file", ({ path, password }): ConnectionsFilePreview => {
   const { file, locked } = openFile(path, password);
+  const source = file.tableplus ? "tableplus" : "tabler";
   if (locked)
-    return { encrypted: true, needsPassword: true, groups: [], connections: [], skipped: [] };
+    return {
+      source,
+      encrypted: true,
+      needsPassword: true,
+      groups: [],
+      connections: [],
+      skipped: [],
+    };
   const names = [...mockProfiles.values()].map((p) => p.name);
   return {
+    source,
     encrypted: file.password !== null,
     needsPassword: false,
     groups: file.groups.map((g) => g.path),
@@ -260,9 +339,9 @@ registerMock("inspect_connections_file", ({ path, password }): ConnectionsFilePr
       duplicateName: names.some((n) => sameName(n, c.profile.name)),
       hasPassword: c.password !== null,
       hasSshSecrets: c.sshSecrets,
+      notes: c.notes ?? [],
     })),
-    // Mock files only hold connections this build reads.
-    skipped: [],
+    skipped: file.skipped ?? [],
   };
 });
 
