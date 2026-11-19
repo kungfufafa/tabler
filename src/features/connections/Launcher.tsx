@@ -533,11 +533,6 @@ export function Launcher() {
     icon: Import,
     run: () => void startImportConnections(),
   };
-  const importTablePlusItem: MenuEntry = {
-    kind: "item",
-    label: "Import from TablePlus…",
-    run: () => void startImportConnections("tableplus"),
-  };
   const backup = (mode: "backup" | "restore") =>
     openBackup({ mode, profileId: selected?.id ?? null, database: null });
   const backupItems: MenuEntry[] = [
@@ -577,7 +572,6 @@ export function Launcher() {
     sortMenu,
     separator,
     importItem,
-    importTablePlusItem,
     exportMenu(selected, groupOf(selected)),
     separator,
     ...backupItems,
@@ -991,9 +985,6 @@ export function Launcher() {
             <WelcomeAction icon={Import} onClick={() => void startImportConnections()}>
               Import Connections…
             </WelcomeAction>
-            <WelcomeAction icon={Import} onClick={() => void startImportConnections("tableplus")}>
-              Import from TablePlus…
-            </WelcomeAction>
           </nav>
           <nav
             aria-label="Backup and restore"
@@ -1079,7 +1070,7 @@ export function Launcher() {
                     description={
                       searching
                         ? "Try another search term."
-                        : "Enter your database details, paste a connection URL, or import saved connections."
+                        : "Enter your database details, paste a connection URL, or import connections saved from Tabler or TablePlus."
                     }
                   />
                 ) : (
