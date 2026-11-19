@@ -28,12 +28,12 @@ pub mod passcode;
 pub mod plugins;
 pub mod process;
 pub mod profiles_io;
-pub mod tableplus;
 pub mod query_files;
 pub mod recent;
 pub mod secrets;
 pub mod sqlgen;
 pub mod state;
+pub mod tableplus;
 pub mod telemetry;
 #[cfg(test)]
 pub mod testkit;
