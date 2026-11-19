@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Lock, ShieldCheck, SquareTerminal, TriangleAlert } from "lucide-react";
+import { Info, KeyRound, Lock, ShieldCheck, SquareTerminal, TriangleAlert } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { FormError } from "@/components/FormError";
@@ -22,6 +22,7 @@ import {
   toIpcError,
   type ConnectionProfile,
   type ConnectionsFilePreview,
+  type ConnectionsFileSource,
   type SkippedConnection,
 } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
@@ -114,11 +115,21 @@ function ImportedPasswordCommand({
 
 /**
  * The file's connections this version cannot read: a newer Tabler wrote them (a database it does
- * not support yet, or a setting it does not know). Listed so none goes missing unnoticed; they
- * are not imported.
+ * not support yet, or a setting it does not know), or, in a TablePlus export, a database Tabler
+ * does not support. Listed so none goes missing unnoticed; they are not imported.
  */
-function SkippedConnections({ skipped }: { skipped: SkippedConnection[] }) {
-  const count = skipped.length === 1 ? "1 connection needs" : `${skipped.length} connections need`;
+function SkippedConnections({
+  skipped,
+  source,
+}: {
+  skipped: SkippedConnection[];
+  source: ConnectionsFileSource;
+}) {
+  const n = skipped.length;
+  const heading =
+    source === "tableplus"
+      ? `${n === 1 ? "1 connection" : `${n} connections`} cannot be imported`
+      : `${n === 1 ? "1 connection needs" : `${n} connections need`} a newer version of Tabler and will not be imported`;
   return (
     <div
       role="group"
@@ -127,7 +138,7 @@ function SkippedConnections({ skipped }: { skipped: SkippedConnection[] }) {
     >
       <div className="text-warning flex items-center gap-1 font-medium">
         <TriangleAlert className="size-3 shrink-0" aria-hidden />
-        {count} a newer version of Tabler and will not be imported
+        {heading}
       </div>
       <ul className="mt-1 flex max-h-28 flex-col gap-0.5 overflow-y-auto">
         {skipped.map((s, i) => (
@@ -149,7 +160,7 @@ const fileName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ??
 
 type Phase =
   | { kind: "loading" }
-  | { kind: "password"; error: string | null }
+  | { kind: "password"; error: string | null; source: ConnectionsFileSource }
   | { kind: "preview"; preview: ConnectionsFilePreview }
   | { kind: "failed"; message: string };
 
@@ -195,7 +206,8 @@ export function ImportConnectionsDialog({
     ipc.profiles.inspectConnectionsFile(path, null).then(
       (preview) => {
         if (cancelled) return;
-        if (preview.needsPassword) setPhase({ kind: "password", error: null });
+        if (preview.needsPassword)
+          setPhase({ kind: "password", error: null, source: preview.source });
         else showPreview(preview);
       },
       (err: unknown) => {
@@ -209,13 +221,15 @@ export function ImportConnectionsDialog({
 
   const unlock = async () => {
     if (!path) return;
+    const source = phase.kind === "password" ? phase.source : "tabler";
     setBusy(true);
     try {
       const preview = await ipc.profiles.inspectConnectionsFile(path, password);
-      if (preview.needsPassword) setPhase({ kind: "password", error: "Enter the file password" });
+      if (preview.needsPassword)
+        setPhase({ kind: "password", error: "Enter the file password", source: preview.source });
       else showPreview(preview);
     } catch (err) {
-      setPhase({ kind: "password", error: toIpcError(err).message });
+      setPhase({ kind: "password", error: toIpcError(err).message, source });
     } finally {
       setBusy(false);
     }
@@ -250,6 +264,12 @@ export function ImportConnectionsDialog({
   };
 
   const items = phase.kind === "preview" ? phase.preview.connections : [];
+  const fileSource =
+    phase.kind === "preview"
+      ? phase.preview.source
+      : phase.kind === "password"
+        ? phase.source
+        : null;
   const skipped = phase.kind === "preview" ? phase.preview.skipped : [];
   const allChecked = items.length > 0 && items.every((c) => selected.has(c.profile.id));
   const someChecked = items.some((c) => selected.has(c.profile.id));
@@ -278,6 +298,7 @@ export function ImportConnectionsDialog({
           <DialogTitle className="text-sm">Import Connections</DialogTitle>
           <DialogDescription className="truncate text-xs" title={path ?? undefined}>
             {path ? fileName(path) : null}
+            {fileSource === "tableplus" && " · TablePlus export"}
           </DialogDescription>
         </DialogHeader>
 
@@ -299,7 +320,9 @@ export function ImportConnectionsDialog({
             }}
           >
             <label htmlFor={`${id}-password`} className="text-xs">
-              This file is encrypted. Enter its password.
+              {phase.source === "tableplus"
+                ? "This TablePlus export is encrypted. Enter the password you set when exporting it from TablePlus."
+                : "This file is encrypted. Enter its password."}
             </label>
             <Input
               id={`${id}-password`}
@@ -380,6 +403,19 @@ export function ImportConnectionsDialog({
                         keep={keepCommands.has(c.profile.id)}
                         onKeepChange={(on) => toggleKeep(c.profile.id, on)}
                       />
+                      {c.notes.length > 0 && (
+                        <ul
+                          aria-label={`Notes on ${c.profile.name}`}
+                          className="text-muted-foreground mt-0.5 flex flex-col gap-0.5 text-xs"
+                        >
+                          {c.notes.map((note, i) => (
+                            <li key={i} className="flex items-start gap-1">
+                              <Info className="mt-0.5 size-3 shrink-0" aria-hidden />
+                              {note}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                       {c.duplicateName && (
                         <div className="text-warning mt-0.5 text-xs">
                           A connection named “{c.profile.name}” already exists; this one is added
@@ -392,7 +428,9 @@ export function ImportConnectionsDialog({
               </ul>
             </div>
           ))}
-        {skipped.length > 0 && <SkippedConnections skipped={skipped} />}
+        {skipped.length > 0 && (
+          <SkippedConnections skipped={skipped} source={fileSource ?? "tabler"} />
+        )}
 
         <DialogFooter>
           <Button type="button" variant="outline" size="sm" onClick={onClose}>

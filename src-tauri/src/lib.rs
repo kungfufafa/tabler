@@ -33,6 +33,7 @@ pub mod recent;
 pub mod secrets;
 pub mod sqlgen;
 pub mod state;
+pub mod tableplus;
 pub mod telemetry;
 #[cfg(test)]
 pub mod testkit;

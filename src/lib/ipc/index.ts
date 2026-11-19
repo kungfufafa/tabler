@@ -233,6 +233,7 @@ export type { MysqlVersion } from "./bindings/MysqlVersion";
 export type { SslNegotiation } from "./bindings/SslNegotiation";
 export type { ExportConnectionsRequest } from "./bindings/ExportConnectionsRequest";
 export type { ConnectionsFilePreview } from "./bindings/ConnectionsFilePreview";
+export type { ConnectionsFileSource } from "./bindings/ConnectionsFileSource";
 export type { ImportPreviewItem } from "./bindings/ImportPreviewItem";
 export type { SkippedConnection } from "./bindings/SkippedConnection";
 export type { TableKind } from "./bindings/TableKind";

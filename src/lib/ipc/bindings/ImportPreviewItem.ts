@@ -12,4 +12,10 @@ profile: ConnectionProfile,
 /**
  * A saved connection already has this name.
  */
-duplicateName: boolean, hasPassword: boolean, hasSshSecrets: boolean, };
+duplicateName: boolean, hasPassword: boolean, hasSshSecrets: boolean, 
+/**
+ * What the user should know about this connection before importing it: for a TablePlus
+ * export, the settings that do not come across as they were (an SSH key file to pick again,
+ * a password TablePlus asked for on every connect…). Empty for Tabler files.
+ */
+notes: Array<string>, };

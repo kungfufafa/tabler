@@ -87,6 +87,12 @@ Menu shortcuts only act when the focused part of the page does not handle the ke
 - Opening a profile that is already open switches to it instead of starting a second session.
 - **New connection** has Import from URL… on its first step and on its form.
 - Import / export connections to an encrypted `.tablerconnections` file.
+- **Import from TablePlus…** (welcome screen and the list's right-click menu; Import Connections…
+  takes the same files): reads a `.tableplusconnection` export from TablePlus for macOS or Windows
+  with its file password, keeping groups and group images, passwords, SSH settings and keys, SSL
+  modes and files, tags, colours, safe mode, startup SQL and each database's own settings. The
+  preview notes what does not come across as it was, and lists connections to databases Tabler
+  does not have (Oracle, Redis Sentinel…).
 - **Bootstrap commands**: SQL that runs after every login (or a bootstrap script).
 - MySQL and PostgreSQL connection options, read-only sessions and keep-alive pings.
 - The connect timeout is 60 s unless the form or Settings says otherwise.

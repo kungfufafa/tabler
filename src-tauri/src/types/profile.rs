@@ -589,6 +589,22 @@ pub struct ImportPreviewItem {
     pub duplicate_name: bool,
     pub has_password: bool,
     pub has_ssh_secrets: bool,
+    /// What the user should know about this connection before importing it: for a TablePlus
+    /// export, the settings that do not come across as they were (an SSH key file to pick again,
+    /// a password TablePlus asked for on every connect…). Empty for Tabler files.
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+/// Which app wrote a connections file: Tabler (`.tablerconnections`) or TablePlus (its
+/// `.tableplusconnection` export, read by `tableplus`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum ConnectionsFileSource {
+    #[default]
+    Tabler,
+    Tableplus,
 }
 
 /// A connection of a `.tablerconnections` file that this build cannot read: a newer Tabler wrote
@@ -610,6 +626,8 @@ pub struct SkippedConnection {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct ConnectionsFilePreview {
+    #[serde(default)]
+    pub source: ConnectionsFileSource,
     pub encrypted: bool,
     pub needs_password: bool,
     pub groups: Vec<String>,

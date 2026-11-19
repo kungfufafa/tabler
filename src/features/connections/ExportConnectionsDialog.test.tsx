@@ -4,7 +4,11 @@ import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ipc } from "@/lib/ipc";
-import { resetMockConnectionFiles } from "@/lib/ipc/mock/connections_io";
+import {
+  DEMO_TABLEPLUS_PASSWORD,
+  DEMO_TABLEPLUS_PATH,
+  resetMockConnectionFiles,
+} from "@/lib/ipc/mock/connections_io";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
 import { resetMockSettings } from "@/lib/ipc/mock/settings";
 import { ExportConnectionsDialog } from "./ExportConnectionsDialog";
@@ -136,6 +140,7 @@ describe("ExportConnectionsDialog", () => {
     const plain = { ...pg, id: "f-plain", name: "Plain", options: { ...options, readOnly: true } };
     vi.spyOn(ipc.profiles, "inspectConnectionsFile").mockResolvedValue({
       encrypted: false,
+      source: "tabler",
       needsPassword: false,
       groups: [],
       connections: [sneaky, plain].map((profile) => ({
@@ -143,6 +148,7 @@ describe("ExportConnectionsDialog", () => {
         duplicateName: false,
         hasPassword: false,
         hasSshSecrets: false,
+        notes: [],
       })),
       skipped: [],
     });
@@ -179,6 +185,7 @@ describe("ExportConnectionsDialog", () => {
     });
     vi.spyOn(ipc.profiles, "inspectConnectionsFile").mockResolvedValue({
       encrypted: false,
+      source: "tabler",
       needsPassword: false,
       groups: [],
       connections: [
@@ -190,6 +197,7 @@ describe("ExportConnectionsDialog", () => {
         duplicateName: false,
         hasPassword: false,
         hasSshSecrets: false,
+        notes: [],
       })),
       skipped: [],
     });
@@ -226,6 +234,7 @@ describe("ExportConnectionsDialog", () => {
     const pg = SEED_PROFILES.find((p) => p.id === "p-local-pg")!;
     vi.spyOn(ipc.profiles, "inspectConnectionsFile").mockResolvedValue({
       encrypted: false,
+      source: "tabler",
       needsPassword: false,
       groups: [],
       connections: [
@@ -234,6 +243,7 @@ describe("ExportConnectionsDialog", () => {
           duplicateName: false,
           hasPassword: false,
           hasSshSecrets: false,
+          notes: [],
         },
       ],
       skipped: [
@@ -266,6 +276,7 @@ describe("ExportConnectionsDialog", () => {
   it("says so when it can read none of the file's connections", async () => {
     vi.spyOn(ipc.profiles, "inspectConnectionsFile").mockResolvedValue({
       encrypted: false,
+      source: "tabler",
       needsPassword: false,
       groups: [],
       connections: [],
@@ -355,6 +366,37 @@ describe("ExportConnectionsDialog", () => {
       { path: "Staging", icon: "server" },
       { path: "Staging / Empty", icon: "archive" },
     ]);
+  });
+
+  it("imports a TablePlus export: its password, notes and unsupported databases", async () => {
+    const importConnections = vi.spyOn(ipc.profiles, "importConnections");
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    wrap(<ImportConnectionsDialog path={DEMO_TABLEPLUS_PATH} onClose={onClose} />);
+    const dialog = await screen.findByRole("dialog", { name: "Import Connections" });
+    const password = await within(dialog).findByLabelText("File password");
+    expect(dialog).toHaveTextContent("TablePlus export");
+    expect(dialog).toHaveTextContent("the password you set when exporting it from TablePlus");
+    await user.type(password, `${DEMO_TABLEPLUS_PASSWORD}{Enter}`);
+
+    const items = await within(dialog).findByRole("list", { name: "Connections in the file" });
+    expect(within(items).getAllByRole("checkbox", { name: /^Import / })).toHaveLength(2);
+    expect(within(dialog).getByRole("list", { name: "Notes on Orders (prod)" })).toHaveTextContent(
+      "Choose the SSH private key again",
+    );
+    const skipped = within(dialog).getByRole("group", {
+      name: "Connections that cannot be imported",
+    });
+    expect(skipped).toHaveTextContent("1 connection cannot be imported");
+    expect(skipped).toHaveTextContent("Legacy ERP is an Oracle connection");
+    await user.click(within(dialog).getByRole("button", { name: "Import" }));
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(importConnections).toHaveBeenCalledWith(
+      DEMO_TABLEPLUS_PATH,
+      DEMO_TABLEPLUS_PASSWORD,
+      ["tp-orders", "tp-shop"],
+      [],
+    );
   });
 
   it("explains a file that cannot be read", async () => {
