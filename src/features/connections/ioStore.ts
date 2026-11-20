@@ -49,9 +49,6 @@ const ANY_IMPORT_FILTER = {
   extensions: [CONNECTIONS_FILE_EXTENSION, TABLEPLUS_FILE_EXTENSION],
 };
 
-/** Where an import comes from: any connections file, or a TablePlus export in particular. */
-export type ImportSource = "any" | "tableplus";
-
 export function openExportConnections(scope: ExportScope): void {
   useConnectionsIo.setState({ exportScope: scope });
 }
@@ -70,37 +67,24 @@ export async function pickExportPath(defaultName: string): Promise<string | null
 }
 
 /**
- * Asks for a connections file to import (open panel): a Tabler or a TablePlus file, with the
- * TablePlus filter first for "Import from TablePlus…" (the backend tells the two apart by their
- * content, not by their name).
+ * Asks for a connections file to import (open panel): a Tabler or a TablePlus export, both under
+ * one filter (the backend tells the two apart by their content, not by their name).
  */
-export async function pickImportPath(source: ImportSource = "any"): Promise<string | null> {
-  const tableplus = source === "tableplus";
+export async function pickImportPath(): Promise<string | null> {
   if (isMock)
-    return window.prompt(
-      tableplus ? "Import TablePlus connections from" : "Import connections from",
-      tableplus ? DEMO_TABLEPLUS_PATH : "/Users/me/Downloads/team.tablerconnections",
-    );
+    return window.prompt("Import connections from", "/Users/me/Downloads/team.tablerconnections");
   const { open } = await import("@tauri-apps/plugin-dialog");
   const picked = await open({
-    title: tableplus ? "Import from TablePlus" : "Import Connections",
+    title: "Import Connections",
     multiple: false,
     directory: false,
-    filters: tableplus
-      ? [TABLEPLUS_FILTER, ANY_IMPORT_FILTER]
-      : [ANY_IMPORT_FILTER, TABLER_FILTER, TABLEPLUS_FILTER],
+    filters: [ANY_IMPORT_FILTER, TABLER_FILTER, TABLEPLUS_FILTER],
   });
   return typeof picked === "string" ? picked : null;
 }
 
-/** The mock's TablePlus export (`lib/ipc/mock/connections_io.ts`). */
-const DEMO_TABLEPLUS_PATH = "/Users/me/Downloads/TablePlus.tableplusconnection";
-
-/**
- * "Import Connections…" / "Import from TablePlus…": picks the file, then opens the import dialog
- * on it.
- */
-export async function startImportConnections(source: ImportSource = "any"): Promise<void> {
-  const path = (await pickImportPath(source))?.trim();
+/** "Import Connections…": picks the file, then opens the import dialog on it. */
+export async function startImportConnections(): Promise<void> {
+  const path = (await pickImportPath())?.trim();
   if (path) useConnectionsIo.setState({ importPath: path });
 }
