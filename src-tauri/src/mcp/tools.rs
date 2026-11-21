@@ -994,7 +994,7 @@ async fn run_query(
                 let truncated = cut || r.truncated;
                 cut_any |= truncated;
                 o["columns"] = columns_json(&columns);
-                o["rows"] = json!(json_rows);
+                o["rows"] = Json::Array(json_rows);
                 if truncated {
                     o["truncated"] = json!(true);
                 }
@@ -1002,11 +1002,14 @@ async fn run_query(
                     .map(|(columns, rows)| {
                         let (json_rows, cut) = rows_json(&columns, &rows, &mut budget);
                         cut_any |= cut;
-                        json!({ "columns": columns_json(&columns), "rows": json_rows, "truncated": cut })
+                        let mut set = json!({ "truncated": cut });
+                        set["columns"] = columns_json(&columns);
+                        set["rows"] = Json::Array(json_rows);
+                        set
                     })
                     .collect();
                 if !extra.is_empty() {
-                    o["moreResultSets"] = json!(extra);
+                    o["moreResultSets"] = Json::Array(extra);
                 }
             }
             if let Some(n) = r.affected {
@@ -1031,8 +1034,8 @@ async fn run_query(
     let mut out = json!({
         "connection": profile.name,
         "database": current_db,
-        "results": statements,
     });
+    out["results"] = Json::Array(statements);
     if let Some(now) = &moved_to {
         out["database"] = json!(now);
         out["databaseChanged"] = json!(format!(
