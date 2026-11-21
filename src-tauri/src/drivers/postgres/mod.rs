@@ -181,20 +181,6 @@ impl PgSession {
             })
     }
 
-    /// Runs `f` with the editor client, or `NotConnected` when it is gone.
-    #[allow(dead_code)]
-    pub(crate) async fn with_editor<R>(
-        &self,
-        f: impl AsyncFnOnce(&Client) -> Result<R, AppError>,
-    ) -> Result<R, AppError> {
-        let guard = self.editor.lock().await;
-        let client = guard.as_ref().ok_or(AppError::NotConnected)?;
-        if self.editor_unusable(client) {
-            return Err(AppError::NotConnected);
-        }
-        f(client).await
-    }
-
     fn editor_unusable(&self, client: &Client) -> bool {
         self.closing.load(Ordering::SeqCst)
             || self.editor_lost.load(Ordering::SeqCst)
