@@ -88,7 +88,6 @@ keyring = "4"
 thiserror = "2"
 log = "0.4"
 base64 = "0.23"
-csv = "1"
 async-trait = "0.1"
 regex = "1"
 # SQLCipher (encrypted SQLite, b100): bundled, with CommonCrypto on macOS (no OpenSSL needed).
@@ -189,6 +188,8 @@ mysql_async = { version = "0.37", default-features = false, features = ["default
 
 [dev-dependencies]
 tempfile = "3"
+# Reads back CSV exports in tests.
+csv = "1"
 # Paused-clock tests (`#[tokio::test(start_paused = true)]`) of timeouts and cancel retries.
 tokio = { version = "1", features = ["test-util"] }
 # Authorizer hooks: the D1 fake refuses statements the way D1 does, not by judging their text.
