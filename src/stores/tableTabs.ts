@@ -4,7 +4,7 @@ import type { ColumnState } from "@/features/datagrid/types";
 import { emptyStaging } from "@/features/staging/model";
 import type { StagingState } from "@/features/staging/types";
 import type { Conjunction, FilterOp, RowCount, SortSpec } from "@/lib/ipc";
-import { DEFAULT_PREFS, getPrefs } from "./prefs";
+import { getPrefs } from "./prefs";
 
 export interface FilterRowSpec {
   id: string;
@@ -55,9 +55,6 @@ export interface TableTabState {
    */
   stagedOn: string | null;
 }
-
-/** Built-in page size; new tabs use the "default page size" preference (`getPrefs().pageSize`). */
-export const DEFAULT_LIMIT: number = DEFAULT_PREFS.pageSize;
 
 export function newFilterRow(column: string, op: FilterOp = "eq", value = ""): FilterRowSpec {
   return { id: crypto.randomUUID(), column, op, value, value2: "", enabled: true };

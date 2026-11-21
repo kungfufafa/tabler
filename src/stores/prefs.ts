@@ -133,7 +133,6 @@ export type CsvQuotePref = (typeof CSV_QUOTE_PREFS)[number];
 export const CSV_LINE_BREAK_PREFS = ["\n", "\r\n", "\r"] as const;
 export type CsvLineBreakPref = (typeof CSV_LINE_BREAK_PREFS)[number];
 /** The decimal separator: `.`, `,` or one custom character (see `isCsvDecimal`). */
-export const CSV_DECIMAL_PREFS = [".", ","] as const;
 export type CsvDecimalPref = string;
 /**
  * A valid decimal separator: `.`, `,` or one printable ASCII character that is not a digit or a

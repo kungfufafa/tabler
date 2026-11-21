@@ -71,10 +71,6 @@ export function isThemeToken(name: string): name is ThemeToken {
 /** Every token as a value; custom themes may hold only some (the rest come from their base). */
 export type ThemeTokens = Record<ThemeToken, string>;
 
-export function tokenLabel(name: ThemeToken): string {
-  return THEME_TOKENS.find((t) => t.name === name)?.label ?? name;
-}
-
 /** The CSS custom property of a token. */
 export const tokenVar = (name: ThemeToken): string => `--${name}`;
 

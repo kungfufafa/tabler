@@ -162,10 +162,6 @@ export function getEditorState(tabId: string): EditorState | null {
   return views.get(tabId)?.state ?? stored.get(tabId)?.state ?? null;
 }
 
-export function hasEditorState(tabId: string): boolean {
-  return views.has(tabId) || stored.has(tabId);
-}
-
 /**
  * Applies a transaction to the tab's editor whether or not it is mounted (e.g. diagnostics that
  * arrive after the user switched to another tab).
