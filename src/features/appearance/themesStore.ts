@@ -134,10 +134,6 @@ export const useThemes = create<ThemesState>()((set, get) => {
 
 export const getCustomThemes = (): readonly CustomTheme[] => useThemes.getState().themes;
 
-/** The custom theme with this id, if there is one. */
-export const getCustomTheme = (id: string): CustomTheme | undefined =>
-  useThemes.getState().themes.find((t) => t.id === id);
-
 /**
  * Reads the app DB copy once per session (later calls return the same promise). Edits made before
  * it resolves win over the stored copy; a localStorage-only copy (first run, or the in-memory mock

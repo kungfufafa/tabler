@@ -85,18 +85,6 @@ export function forgetTemporary(profileId: string): void {
   });
 }
 
-export function markSeenConnected(profileId: string): void {
-  useDeepLinkStore.setState((s) => {
-    const t = s.temporary[profileId];
-    if (!t || t.seenConnected) return s;
-    return { temporary: { ...s.temporary, [profileId]: { ...t, seenConnected: true } } };
-  });
-}
-
-export function isTemporary(profileId: string): boolean {
-  return profileId in useDeepLinkStore.getState().temporary;
-}
-
 export function setPendingFile(file: PendingFile | null): void {
   useDeepLinkStore.setState({ pendingFile: file });
 }

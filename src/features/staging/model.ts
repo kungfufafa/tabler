@@ -277,7 +277,3 @@ export function canRedo(s: StagingState): boolean {
 export function pendingCount(s: StagingState): number {
   return s.changes.size;
 }
-
-export function cellValue(s: StagingState, rowKey: string, col: number): Value | undefined {
-  return s.changes.get(rowKey)?.patch.get(col);
-}

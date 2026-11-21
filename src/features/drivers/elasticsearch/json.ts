@@ -253,8 +253,6 @@ export function get(v: Json | undefined, key: string): Json | undefined {
   return v?.k === "obj" ? v.v.find(([k]) => k === key)?.[1] : undefined;
 }
 
-export const asStr = (v: Json | undefined): string | null => (v?.k === "str" ? v.v : null);
-
 // `JSON.stringify` escapes as the backend's `write_str` does (`\uXXXX` for other controls).
 const quote = (s: string): string => JSON.stringify(s);
 

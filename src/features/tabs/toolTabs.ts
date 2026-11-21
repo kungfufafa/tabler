@@ -136,8 +136,3 @@ export function openToolTab<P>(
   store.open({ id, kind: "tool", connectionId, tool, title, params });
   return id;
 }
-
-/** Test-only: forget every registration. */
-export function resetToolTabsForTests(): void {
-  registry.clear();
-}

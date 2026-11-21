@@ -52,11 +52,6 @@ export function closeFind(tabId: string): void {
   if (stateOf(tabId).open) setFind(tabId, { open: false });
 }
 
-export function toggleFind(tabId: string): void {
-  if (stateOf(tabId).open) closeFind(tabId);
-  else openFind(tabId);
-}
-
 /** The tab's find bar state (a shared closed state when it never opened). */
 export function useFind(tabId: string): FindState {
   return useFindStore((s) => s.byTab[tabId] ?? CLOSED_FIND);

@@ -71,11 +71,6 @@ export function isPasswordLevel(level: SafeModeLevel): boolean {
   return level === "safe" || level === "safeNonSelect";
 }
 
-/** Alert Mode 1 / 2: a confirmation is asked. */
-export function isAlertLevel(level: SafeModeLevel): boolean {
-  return level === "alert" || level === "alertNonSelect";
-}
-
 /** How much a level asks: silent < Alert 2 < Alert 1 < Safe 2 < Safe 1. */
 const STRICTNESS: Record<SafeModeLevel, number> = {
   silent: 0,

@@ -26,7 +26,6 @@ import {
   type TableSummary,
 } from "@/lib/ipc";
 import { isPinned, togglePin } from "@/stores/pins";
-import { useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
 import { laravelMigrations } from "./laravel";
 import type { NewTarget } from "./menu";
@@ -88,15 +87,6 @@ export function scriptOf(statements: readonly string[]): string {
 
 function failed(what: string, e: unknown): void {
   toast.error(what, { description: toIpcError(e).message });
-}
-
-export function openTableTab(
-  ctx: ObjectContext,
-  table: TableSummary,
-  kind: "table" | "structure" = "table",
-): void {
-  useTabsStore.getState().openTable(ctx.connectionId, refOf(table), kind);
-  showWorkspace();
 }
 
 /** What `openSqlInObjectTab` remembers a routine's tab by (overloads are told apart). */
