@@ -124,10 +124,6 @@ export function cycleWorkspace(delta: 1 | -1): void {
 /** Open state of Show Workspaces (⇧⌘\). */
 export const useWorkspaceSwitcher = create<{ open: boolean }>()(() => ({ open: false }));
 
-export function openWorkspaceSwitcher(): void {
-  useWorkspaceSwitcher.setState({ open: true });
-}
-
 export const toggleWorkspaceSwitcher = (): void =>
   useWorkspaceSwitcher.setState((s) => ({ open: !s.open }));
 
