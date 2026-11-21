@@ -47,10 +47,3 @@ export async function pickExportFolder(lastDir: string | null): Promise<string |
   });
   return typeof picked === "string" ? picked : null;
 }
-
-/** Shows the exported file in Finder (no-op in the browser mock). */
-export async function revealExport(path: string): Promise<void> {
-  if (isMock) return;
-  const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-  await revealItemInDir(path);
-}

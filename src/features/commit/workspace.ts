@@ -558,10 +558,6 @@ export function setCommitQueryClient(qc: QueryClient): void {
   queryClient = qc;
 }
 
-export function getCommitQueryClient(): QueryClient | null {
-  return queryClient;
-}
-
 /** Closes the tabs of dropped tables and forgets their cached metadata. */
 export function forgetTables(
   qc: QueryClient,

@@ -16,13 +16,6 @@ export function rowsLabel(n: number): string {
   return plural(n, "row");
 }
 
-/** "Result 2 · 1,204 rows · 23 ms" */
-export function resultTabLabel(n: number, rows: number, durationMs: number | null): string {
-  const parts = [`Result ${n}`, rowsLabel(rows)];
-  if (durationMs !== null) parts.push(formatDuration(durationMs));
-  return parts.join(" · ");
-}
-
 /** What a finished statement did: "1,204 rows", "3 rows affected", "OK". */
 export function statementOutcome(r: StatementResult): string {
   switch (r.kind) {
