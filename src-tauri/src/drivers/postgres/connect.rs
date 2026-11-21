@@ -1022,6 +1022,11 @@ mod tests {
         if std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
             return; // the same port is taken on IPv4: cannot set the scene up
         }
+        let resolves_to_v6 = std::net::ToSocketAddrs::to_socket_addrs(&("localhost", port))
+            .is_ok_and(|mut addrs| addrs.any(|a| a.ip().is_loopback() && a.is_ipv6()));
+        if !resolves_to_v6 {
+            return; // `localhost` is IPv4 only here (e.g. Debian's ip6-localhost)
+        }
         tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
                 let mut buf = [0u8; 512];
