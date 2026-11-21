@@ -260,6 +260,9 @@ pub(crate) mod tests {
     pub(crate) fn material() -> Option<Material> {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();
+        // Any extension makes `x509 -req` sign a v3 certificate; OpenSSL < 3.2 otherwise writes
+        // v1, which webpki refuses.
+        std::fs::write(d.join("client.ext"), "basicConstraints=CA:FALSE\n").unwrap();
         let steps: &[&[&str]] = &[
             &[
                 "req",
@@ -298,6 +301,8 @@ pub(crate) mod tests {
                 "-CAkey",
                 "ca.key",
                 "-CAcreateserial",
+                "-extfile",
+                "client.ext",
                 "-out",
                 "client.crt",
                 "-days",
