@@ -14,7 +14,6 @@ import { applyCommitted, bufferIndex, bufferKey, toResultChanges } from "./chang
 import { TARGET_CHANGED, sameTarget, type ResultEditTarget } from "./editability";
 import {
   dirtyResultOf,
-  pinsOf,
   setResultStaging,
   stagedTargetOf,
   stagingOf,
@@ -199,10 +198,4 @@ export function finishResultCommit(p: PlannedResult, rows: RowResult[]): void {
 /** ⇧⌘Z in a result grid: redoes the last undone edit of the tab's dirty result. */
 export function redoResultEdit(tabId: string, resultId: string): void {
   setResultStaging(tabId, resultId, (s) => (canRedo(s) ? redo(s) : s));
-}
-
-/** Whether the result `resultId` (a run result or a pin of `tabId`) still exists. */
-export function resultExists(tabId: string, resultId: string): boolean {
-  if (getQueryTab(tabId).run?.results.some((r) => r.id === resultId)) return true;
-  return pinsOf(useResultsStore.getState(), tabId).some((p) => p.id === resultId);
 }

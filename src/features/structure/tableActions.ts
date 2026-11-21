@@ -182,8 +182,3 @@ export function validateForeignKey(
     },
   };
 }
-
-/** Toggles `item` in an ordered selection (appends when missing). */
-export function toggleOrdered(list: readonly string[], item: string): string[] {
-  return list.includes(item) ? list.filter((x) => x !== item) : [...list, item];
-}
