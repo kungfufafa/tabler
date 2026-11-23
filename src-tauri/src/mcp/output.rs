@@ -2,6 +2,8 @@
 //! in their natural JSON form (exact numbers that JSON cannot hold, and dates, stay strings).
 //! Rows are capped by count and by the total size of their JSON.
 
+use std::io::{self, Write};
+
 use serde_json::{Map, Value as Json, json};
 
 use crate::types::query::ResultColumn;
@@ -72,6 +74,9 @@ fn has_lossy_number(v: &Json) -> bool {
 }
 
 fn cut(s: &str) -> String {
+    if s.len() <= MAX_TEXT_CHARS {
+        return s.to_owned();
+    }
     match s.char_indices().nth(MAX_TEXT_CHARS) {
         Some((byte, _)) => format!(
             "{}… (truncated, {} characters in all)",
@@ -124,6 +129,20 @@ impl Budget {
     }
 }
 
+#[derive(Default)]
+struct ByteCount(usize);
+
+impl Write for ByteCount {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Converts rows into objects while the budget lasts. Returns them and whether rows were left
 /// out because the budget ran out.
 pub fn rows_json(
@@ -145,9 +164,9 @@ pub fn rows_json(
             );
         }
         let obj = Json::Object(obj);
-        let size = serde_json::to_string(&obj)
-            .map(|s| s.len() + 1)
-            .unwrap_or(0);
+        let mut bytes = ByteCount::default();
+        serde_json::to_writer(&mut bytes, &obj).expect("a JSON value is serializable");
+        let size = bytes.0 + 1;
         if size > budget.bytes {
             budget.bytes = 0;
             budget.rows = 0;
@@ -229,6 +248,18 @@ mod tests {
     }
 
     #[test]
+    fn text_cap_is_in_characters_not_bytes() {
+        let at_cap = "雪".repeat(MAX_TEXT_CHARS);
+        assert_eq!(cut(&at_cap), at_cap);
+        let above_cap = format!("{at_cap}雪");
+        let truncated = format!(
+            "{at_cap}… (truncated, {} characters in all)",
+            MAX_TEXT_CHARS + 1
+        );
+        assert_eq!(cut(&above_cap), truncated);
+    }
+
+    #[test]
     fn rows_stop_at_the_row_and_byte_caps() {
         let cols = [col("a")];
         let rows: Vec<Vec<Value>> = (0..10).map(|i| vec![Value::Int(i)]).collect();
@@ -258,5 +289,30 @@ mod tests {
         // `limit` is clamped to 1..=500.
         assert_eq!(Budget::new(0).rows, 1);
         assert_eq!(Budget::new(10_000).rows, MAX_ROWS as usize);
+    }
+
+    #[test]
+    fn row_budget_counts_escaped_utf8_bytes() {
+        let text = "é雪\n\r\t\"\\\u{0000}";
+        let cols = [col("a\n")];
+        let rows = [vec![Value::Text(text.into())]];
+        let expected = json!({"a\n": text});
+        let size = expected.to_string().len() + 1;
+
+        let mut budget = Budget {
+            rows: 1,
+            bytes: size,
+        };
+        assert_eq!(
+            rows_json(&cols, &rows, &mut budget),
+            (vec![expected], false)
+        );
+        assert_eq!(budget.bytes, 0);
+
+        let mut budget = Budget {
+            rows: 1,
+            bytes: size - 1,
+        };
+        assert_eq!(rows_json(&cols, &rows, &mut budget), (vec![], true));
     }
 }
