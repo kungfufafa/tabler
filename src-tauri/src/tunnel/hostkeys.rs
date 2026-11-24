@@ -52,11 +52,6 @@ impl PendingHostKey {
             changed,
         }
     }
-
-    pub fn parse_key(&self) -> Result<PublicKey, AppError> {
-        russh::keys::parse_public_key_base64(&self.public_key)
-            .map_err(|e| AppError::internal(format!("invalid stored host key: {e}")))
-    }
 }
 
 /// SHA-256 fingerprint in OpenSSH notation (`SHA256:<unpadded base64>`).
