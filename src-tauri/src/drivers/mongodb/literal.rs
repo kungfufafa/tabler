@@ -198,13 +198,6 @@ impl<'a> Lexer<'a> {
         Ok(Some(rest[..end].to_string()))
     }
 
-    /// The rest of the line (for `use x`, `show dbs`), trimmed.
-    pub fn rest_of_text(&mut self) -> &'a str {
-        let rest = self.rest();
-        self.pos = self.src.len();
-        rest.trim()
-    }
-
     /// A quoted string (`'…'`, `"…"` or a backtick string without `${}`).
     pub fn string(&mut self) -> Result<String> {
         self.skip_trivia()?;
