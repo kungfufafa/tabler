@@ -54,7 +54,6 @@ export const mockStoredPassword = (profileId: string): string | null =>
   secrets.get(profileId) ?? null;
 /** The second secrets (key passphrase, session token) of the drivers that take them, by profile id. */
 const extraSecrets = new Map<string, Partial<Record<ExtraSecret, string>>>();
-export { extraSecrets as mockExtraSecrets };
 
 /**
  * Saves the second secrets `input` carries for its driver, like `store_secrets`: absent or null
