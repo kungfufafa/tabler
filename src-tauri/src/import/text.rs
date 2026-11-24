@@ -24,14 +24,6 @@ pub fn single_byte_char(encoding: TextEncoding, b: u8) -> char {
     }
 }
 
-/// Decodes `bytes` of a single-byte encoding.
-pub fn decode_single_byte(encoding: TextEncoding, bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|&b| single_byte_char(encoding, b))
-        .collect()
-}
-
 pub fn encoding_label(encoding: TextEncoding) -> &'static str {
     match encoding {
         TextEncoding::Utf8 => "UTF-8",
