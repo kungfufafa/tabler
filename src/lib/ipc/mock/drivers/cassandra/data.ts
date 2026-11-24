@@ -152,8 +152,6 @@ export function columnsOf(t: Table): ColumnMeta[] {
 }
 
 export const primaryKeyOf = (t: Table): string[] => t.cols.filter(isKey).map((c) => c.name);
-export const partitionKeyOf = (t: Table): string[] =>
-  t.cols.filter((c) => c.role === "partition").map((c) => c.name);
 
 /** `"name"` with `"` doubled (`cql.rs` `double_quoted`). */
 export const quoted = (name: string) => `"${name.replaceAll('"', '""')}"`;
