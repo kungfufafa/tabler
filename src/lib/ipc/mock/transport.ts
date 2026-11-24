@@ -15,10 +15,7 @@ export function mockHandler(cmd: string): Handler | undefined {
 }
 
 /** Simulated IPC latency in ms; 0 in tests. */
-export let mockLatency = import.meta.env.MODE === "test" ? 0 : 40;
-export function setMockLatency(ms: number): void {
-  mockLatency = ms;
-}
+export const mockLatency = import.meta.env.MODE === "test" ? 0 : 40;
 
 export function mockError(code: string, message: string): never {
   throw { code, message };

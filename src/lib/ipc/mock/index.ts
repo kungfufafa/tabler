@@ -29,4 +29,4 @@ import "./native";
 import "./trace";
 import "./updater";
 
-export { mockEmit, mockInvoke, mockListen, registerMock, setMockLatency } from "./transport";
+export { mockEmit, mockInvoke, mockListen, registerMock } from "./transport";
