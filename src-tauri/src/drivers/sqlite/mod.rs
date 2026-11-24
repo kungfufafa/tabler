@@ -117,12 +117,6 @@ pub fn header_kind(path: &str) -> HeaderKind {
     HeaderKind::Foreign
 }
 
-/// Why the file at `path` cannot be opened without a key (see [`header_kind`]); `None` for a
-/// SQLite file, an empty file or one that cannot be read here.
-pub fn header_error(path: &str) -> Option<AppError> {
-    header_kind(path).error(path)
-}
-
 /// The SQL statements of a resource file (`.sqliterc`): its text without the sqlite3 shell's
 /// dot-commands (`.headers on`, `.mode column`…), which only the shell understands.
 pub fn resource_file_sql(text: &str) -> String {
