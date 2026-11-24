@@ -11,10 +11,6 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use crate::error::AppError;
 
-/// What the Key… / Cert… files must be (shown in errors and in the form's SSL hint).
-pub const ACCEPTED_FORMATS: &str = "PEM files: an unencrypted PKCS#8, PKCS#1 or SEC1 key, and \
-     the client certificate followed by its intermediates";
-
 /// A client certificate chain (leaf first) and its private key.
 pub struct ClientCertificate {
     pub certs: Vec<CertificateDer<'static>>,
