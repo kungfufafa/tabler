@@ -573,16 +573,6 @@ pub fn parse_dictionaries(rows: &[Vec<Value>]) -> Vec<Dictionary> {
         .collect()
 }
 
-pub const USER_FUNCTIONS: &str = "SELECT name, create_query FROM system.functions \
-     WHERE origin = 'SQLUserDefined' ORDER BY name";
-
-/// `(name, CREATE FUNCTION text)`.
-pub fn parse_user_functions(rows: &[Vec<Value>]) -> Vec<(String, String)> {
-    rows.iter()
-        .filter_map(|r| Some((text(r, 0)?, text(r, 1).unwrap_or_default())))
-        .collect()
-}
-
 // --- Administration ------------------------------------------------------------------------------
 
 pub const PROCESSES: &str = "SELECT query_id, user, address, elapsed, read_rows, memory_usage, \
@@ -616,34 +606,6 @@ pub fn parse_processes(rows: &[Vec<Value>]) -> Vec<Process> {
                 memory_bytes: int(r, 5),
                 database: non_empty(r, 6),
                 query: text(r, 7),
-            })
-        })
-        .collect()
-}
-
-/// `{db:String}`, `{t:String}`: mutations still running (or stuck) on a table.
-pub const MUTATIONS: &str = "SELECT mutation_id, command, create_time, latest_fail_reason, \
-     parts_to_do FROM system.mutations \
-     WHERE database = {db:String} AND table = {t:String} AND is_done = 0 ORDER BY create_time";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mutation {
-    pub id: String,
-    pub command: String,
-    pub created: Option<String>,
-    pub fail_reason: Option<String>,
-    pub parts_to_do: Option<i64>,
-}
-
-pub fn parse_mutations(rows: &[Vec<Value>]) -> Vec<Mutation> {
-    rows.iter()
-        .filter_map(|r| {
-            Some(Mutation {
-                id: text(r, 0)?,
-                command: text(r, 1).unwrap_or_default(),
-                created: text(r, 2),
-                fail_reason: non_empty(r, 3),
-                parts_to_do: int(r, 4),
             })
         })
         .collect()
@@ -977,15 +939,6 @@ mod tests {
         assert_eq!(procs[0].query_id, "q-1");
         assert_eq!(procs[0].elapsed_secs, Some(1.5));
         assert_eq!(procs[0].memory_bytes, Some(9007199254740993));
-        let muts = parse_mutations(&[vec![
-            t("mutation_3.txt"),
-            t("UPDATE a = 1 WHERE id = 7"),
-            t("2024-01-01 00:00:00"),
-            t(""),
-            Value::Int(2),
-        ]]);
-        assert_eq!(muts[0].parts_to_do, Some(2));
-        assert_eq!(muts[0].fail_reason, None);
         assert_eq!(parse_count(&[vec![Value::Int(1)]]).unwrap(), 1);
         assert_eq!(
             parse_count(&[vec![Value::BigInt("18446744073709551615".into())]]).unwrap(),
@@ -995,9 +948,5 @@ mod tests {
         assert!(parse_count(&[]).is_err());
         let dicts = parse_dictionaries(&[vec![t("geo"), t("LOADED"), t("Hashed"), Value::Null]]);
         assert_eq!(dicts[0].status.as_deref(), Some("LOADED"));
-        assert_eq!(
-            parse_user_functions(&[vec![t("f"), t("CREATE FUNCTION f AS x -> x")]])[0].0,
-            "f"
-        );
     }
 }
