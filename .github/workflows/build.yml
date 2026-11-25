@@ -225,12 +225,20 @@ jobs:
       # On CI (CI=true) the bundler passes --skip-jenkins to bundle_dmg.sh, which skips the Finder
       # AppleScript that places the .dmg background, window size and icons; this keeps it.
       # The signing key is only read when the configuration above turned the updater bundles on.
+      # RPM refuses a '-' in its version, so a pre-release (`1.0.0-rc.1`) has no .rpm.
       - name: Build the installer
+        shell: bash
         env:
           TAURI_BUNDLER_DMG_IGNORE_CI: "true"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build ${{ matrix.args }} --config "${{ runner.temp }}/release.conf.json"
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          bundles=()
+          if [[ "${{ matrix.name }}" == linux && "$VERSION" == *-* ]]; then
+            bundles=(--bundles appimage,deb)
+          fi
+          pnpm tauri build ${{ matrix.args }} "${bundles[@]}" --config "$RUNNER_TEMP/release.conf.json"
 
       - name: Upload the installer
         uses: actions/upload-artifact@v4
