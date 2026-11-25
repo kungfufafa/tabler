@@ -301,24 +301,6 @@ impl Client {
         .await
     }
 
-    pub async fn get_routine(
-        &self,
-        project: &str,
-        dataset: &str,
-        routine: &str,
-    ) -> Result<Routine, AppError> {
-        self.get(
-            self.url(
-                &[
-                    "projects", project, "datasets", dataset, "routines", routine,
-                ],
-                &[],
-            ),
-            "routines.get",
-        )
-        .await
-    }
-
     /// One page of a table's rows (free: no job, no bytes billed). Native tables only; a view
     /// or an external table needs a query.
     pub async fn list_table_data(
