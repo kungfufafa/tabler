@@ -1,7 +1,7 @@
 name: Release installers
 
-# Installers for macOS and Windows, for anyone to download and install:
-#   - every push to `main`: when both installers and CI pass, publish a numbered GitHub Release
+# Installers for macOS, Windows and Linux, for anyone to download and install:
+#   - every push to `main`: when every installer and CI pass, publish a numbered GitHub Release
 #     with the next patch version, then refresh the rolling `nightly` pre-release.
 #     Builds wait in the queue when a push arrives during an active build.
 #   - push a `v*` tag (`git tag v0.1.0 && git push origin v0.1.0`): a GitHub Release for that tag,
@@ -94,6 +94,20 @@ jobs:
               src-tauri/target/release/bundle/nsis/*.exe.sig
               src-tauri/target/release/bundle/msi/*.msi
               src-tauri/target/release/bundle/msi/*.msi.sig
+          # The AppImage, .deb and .rpm (src-tauri/tauri.linux.conf.json), each its own updater
+          # bundle with its signature. Built on the oldest supported Ubuntu, so the binary only
+          # needs the glibc that Ubuntu 22.04, Debian 12, Fedora and newer distributions all have.
+          - os: ubuntu-22.04
+            name: linux
+            label: Linux (.AppImage, .deb, .rpm)
+            args: ""
+            bundle: |
+              src-tauri/target/release/bundle/appimage/*.AppImage
+              src-tauri/target/release/bundle/appimage/*.AppImage.sig
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/deb/*.deb.sig
+              src-tauri/target/release/bundle/rpm/*.rpm
+              src-tauri/target/release/bundle/rpm/*.rpm.sig
     runs-on: ${{ matrix.os }}
     # A cold build compiles every driver, DuckDB's C++ included, twice on macOS (both architectures).
     timeout-minutes: 120
@@ -111,6 +125,15 @@ jobs:
 
       # rustup picks the channel and components from rust-toolchain.toml.
       - uses: dtolnay/rust-toolchain@stable
+
+      # WebKitGTK and the libraries Tauri links on Linux; `file` and FUSE for the AppImage tooling.
+      - name: Linux build dependencies
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            libssl-dev patchelf file libfuse2
 
       - name: Intel target for the universal macOS build
         if: matrix.name == 'macos'
@@ -297,11 +320,11 @@ jobs:
           path: installers
           merge-multiple: true
 
-      # The artifacts keep their `dmg/`, `macos/`, `msi/` and `nsis/` folders (upload-artifact
+      # The artifacts keep their `dmg/`, `macos/`, `msi/`, `nsis/`, `appimage/`, `deb/` and `rpm/` folders (upload-artifact
       # keeps the common parent of several paths); the release wants the files alone.
       - name: Installers to publish
         run: |
-          find installers -mindepth 2 -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.app.tar.gz' -o -name '*.sig' \) -exec mv -t installers {} +
+          find installers -mindepth 2 -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.app.tar.gz' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.sig' \) -exec mv -t installers {} +
           find installers -mindepth 1 -type d -exec rm -r {} +
           ls -l installers
 
@@ -358,7 +381,7 @@ jobs:
             cat "$RUNNER_TEMP/notes.md"
             printf '\n---\n\nBuilt from `%s` on %s. ' "${GITHUB_SHA::7}" "$(date -u +%Y-%m-%d)"
             printf 'An installed Tabler updates itself (Check for Updates…). '
-            printf 'Unsigned builds: see the README for the first-launch steps on macOS (Gatekeeper) and Windows (SmartScreen).\n'
+            printf 'Unsigned builds: see the README for the first-launch steps on macOS (Gatekeeper) and Windows (SmartScreen), and how to install on Linux.\n'
           } > "$body"
           if [ "$TAG" = nightly ]; then
             gh release delete nightly --yes --cleanup-tag 2>/dev/null || true

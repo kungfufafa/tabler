@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  macOS 12+ · Tauri 2 + Rust · React + TypeScript
+  macOS 12+ · Windows 10 / 11 · Linux (x86_64) · Tauri 2 + Rust · React + TypeScript
 </p>
 
 ---
@@ -24,16 +24,19 @@
 
 ## Download
 
-Download the macOS or Windows installer from the
+Download the macOS, Windows or Linux installer from the
 [latest release](https://github.com/kungfufafa/tabler/releases/latest). Each push to `main` that
-passes CI and builds both installers publishes the next patch version (`0.1.1`, `0.1.2`, …).
+passes CI and builds every installer publishes the next patch version (`0.1.1`, `0.1.2`, …).
 The [nightly preview](https://github.com/kungfufafa/tabler/releases/tag/nightly) is also available.
 
-| Platform                         | File                             | Install                                                       |
-| -------------------------------- | -------------------------------- | ------------------------------------------------------------- |
-| macOS 12+ (Apple Silicon, Intel) | `Tabler_<version>_universal.dmg` | Open the DMG and drag Tabler to Applications                  |
-| Windows 10 / 11 (64-bit)         | `Tabler_<version>_x64-setup.exe` | Run it; installs for the current user, no admin rights needed |
-| Windows 10 / 11 (64-bit)         | `Tabler_<version>_x64_en-US.msi` | For an all-users or scripted install                          |
+| Platform                         | File                              | Install                                                       |
+| -------------------------------- | --------------------------------- | ------------------------------------------------------------- |
+| macOS 12+ (Apple Silicon, Intel) | `Tabler_<version>_universal.dmg`  | Open the DMG and drag Tabler to Applications                  |
+| Windows 10 / 11 (64-bit)         | `Tabler_<version>_x64-setup.exe`  | Run it; installs for the current user, no admin rights needed |
+| Windows 10 / 11 (64-bit)         | `Tabler_<version>_x64_en-US.msi`  | For an all-users or scripted install                          |
+| Linux x86_64 (any distribution)  | `Tabler_<version>_amd64.AppImage` | `chmod +x` it and run it; no install needed                   |
+| Debian, Ubuntu (x86_64)          | `Tabler_<version>_amd64.deb`      | `sudo apt install ./Tabler_<version>_amd64.deb`               |
+| Fedora, RHEL, openSUSE (x86_64)  | `Tabler-<version>-1.x86_64.rpm`   | `sudo dnf install ./Tabler-<version>-1.x86_64.rpm`            |
 
 The builds are not code-signed yet, so each platform warns once:
 
@@ -41,6 +44,10 @@ The builds are not code-signed yet, so each platform warns once:
   **Open**, or run `xattr -cr /Applications/Tabler.app`.
 - **Windows** shows a SmartScreen warning. Click **More info** → **Run anyway**. WebView2 is
   downloaded by the installer when Windows does not have it yet.
+- **Linux** needs WebKitGTK 4.1 (Ubuntu 22.04+, Debian 12+, Fedora 36+); the `.deb` and `.rpm`
+  pull it in. Passwords go to the Secret Service (GNOME Keyring, KWallet), so a desktop without
+  one can store none: run `gnome-keyring-daemon` or choose **Ask every time**. An AppImage needs
+  FUSE 2 (`libfuse2`) to start, or run it with `--appimage-extract-and-run`.
 
 An installed build updates itself: it checks at launch (Settings ▸ General turns that off) and on
 **Check for Updates…** in the app menu, shows what changed, and follows the channel it came from,
@@ -55,7 +62,8 @@ See [docs/updates.md](docs/updates.md).
 - **Fast with big tables.** A virtualized grid handles 100k+ rows. Sorting and filtering run on the
   server, and query results stream in.
 - **Secure connections.** SSL/TLS, SSH tunnels (incl. jump hosts and `~/.ssh/config`), passwords in
-  the macOS Keychain, and per-connection Safe Mode.
+  the system keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service), and
+  per-connection Safe Mode.
 - **No lost precision.** 64-bit integers and decimals are never rounded, and timestamps keep the
   server's own text form.
 - **Everything included.** SQL editor, structure editor, ER diagram, import / export, backup /
@@ -82,7 +90,8 @@ Every feature, with its edge cases, is described in **[docs/features.md](docs/fe
 
 ### Requirements
 
-- macOS 12 or newer (Apple Silicon or Intel)
+- macOS 12 or newer (Apple Silicon or Intel), Windows 10 / 11, or Linux x86_64
+  (see [Linux](#linux) for the system packages)
 - [Rust](https://rustup.rs) stable, Node 22 and pnpm 11
 - For the development databases: a local PostgreSQL and MySQL (e.g. Homebrew) or Docker
 
@@ -252,10 +261,29 @@ per-user, no admin rights) and an MSI (`bundle/msi/*.msi`); both download WebVie
 missing. The builds are not code-signed, so SmartScreen warns on the first run (**More info** →
 **Run anyway**).
 
+### Linux
+
+Needs a C toolchain, Perl (OpenSSL for SQLCipher is built from source and linked in, so one build
+runs on any distribution) and the WebKitGTK development packages. On Debian / Ubuntu:
+
+```bash
+sudo apt install build-essential curl file patchelf libssl-dev libxdo-dev \
+  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+pnpm tauri build
+```
+
+On Fedora: `sudo dnf install webkit2gtk4.1-devel openssl-devel libxdo-devel
+libappindicator-gtk3-devel librsvg2-devel perl` and `sudo dnf group install c-development`.
+
+`src-tauri/tauri.linux.conf.json` switches the bundles to an AppImage (`bundle/appimage/`), a
+`.deb` (`bundle/deb/`) and an `.rpm` (`bundle/rpm/`). `pnpm tauri build --bundles deb` builds
+one of them only.
+
 ### Develop and release from Git
 
 The "Release installers" workflow ([.github/workflows/build.yml](.github/workflows/build.yml)) builds a universal
-macOS DMG (Apple Silicon and Intel) and the Windows installers, and publishes them on the
+macOS DMG (Apple Silicon and Intel), the Windows installers and the Linux AppImage, `.deb` and
+`.rpm`, and publishes them on the
 [Releases page](https://github.com/kungfufafa/tabler/releases):
 
 1. Start a short-lived branch from current `main` for each change. Run `pnpm dev:mock` for UI work
@@ -265,10 +293,10 @@ macOS DMG (Apple Silicon and Intel) and the Windows installers, and publishes th
    start with a type (`feat`, `fix`, `ui`, `perf`, `refactor`, `docs`, `test`, `ci`, `build` or
    `chore`): the release notes sort changes by it, and the `PR title` check fails without one.
    Use a draft PR while the change is still in progress.
-3. Resolve review conversations and wait for the required macOS and Windows checks.
+3. Resolve review conversations and wait for the required macOS, Windows and Linux checks.
    Squash-merge once the PR is ready. GitHub uses the PR title for the squash commit and deletes
    the merged branch.
-4. The merge queues the release build. After CI and both installers pass on the resulting
+4. The merge queues the release build. After CI and every installer pass on the resulting
    commit, GitHub creates the next patch tag and publishes the numbered release. The workflow
    then refreshes the rolling `nightly` preview.
 

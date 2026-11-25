@@ -208,3 +208,67 @@ jobs:
           pnpm test
           pnpm test:lanes
           pnpm test:release
+
+  check-linux:
+    name: Linux · app (TypeScript + Rust)
+    # The Rust checks and the renderer's tests on Linux, which build.yml also ships (AppImage,
+    # .deb, .rpm). The same Ubuntu as the release build, so its system libraries are the ones
+    # the installers link.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      # Debug info of every driver's test programs fills the runner's disk; the tests need none.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      # The runner's preinstalled SDKs leave too little room for the test programs.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            libssl-dev patchelf
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          # Keep the compiled dependencies even when a later step fails, so the next run starts warm.
+          cache-on-failure: true
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript — tests
+        run: |
+          pnpm test
+          pnpm test:lanes
+          pnpm test:release
+
+      - name: Rust — clippy, tests
+        # rustfmt reads the same files on every system: the macOS job checks them.
+        run: |
+          pnpm clippy
+          pnpm test:rs
+
+      - name: Generated TypeScript bindings are committed
+        run: git diff --exit-code -- src/lib/ipc/bindings

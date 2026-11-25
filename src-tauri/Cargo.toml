@@ -170,13 +170,17 @@ panic = "abort"
 strip = true
 
 # SQLCipher's crypto: CommonCrypto on macOS, OpenSSL elsewhere. Windows has no system OpenSSL, so
-# it is built from source and linked in statically (needs Perl and NASM at build time).
+# it is built from source and linked in statically (needs Perl and NASM at build time). Linux links
+# it statically too, so one AppImage / .deb / .rpm runs whatever OpenSSL the distribution ships.
 [target.'cfg(windows)'.dependencies]
 dunce = "1"
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 # The SSH tunnel's check for a wildcard listener on a pinned port: a dual-stack `[::]` probe
 # needs IPV6_V6ONLY off (already in the lock via tokio).
 socket2 = "0.6"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 
 # Touch ID (LocalAuthentication) and the sleep / screen-lock notifications of the app lock
 # (already in the lock via tao / wry).

@@ -40,7 +40,7 @@ Tauri v2 + Rust backend (`src-tauri/`), React 19 + TypeScript + Vite 8 + Tailwin
   `docs`, `test`, `ci`, `build` or `chore`. The `PR title` check (`dev/scripts/pr-title.mjs`)
   refuses any other title.
 - The merge triggers the release workflow for that exact commit. CI assigns the next patch
-  version and creates the release tag after both installers and CI pass.
+  version and creates the release tag after every installer and CI pass.
 
 ## Dev databases
 

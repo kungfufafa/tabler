@@ -13,12 +13,14 @@ build of its own channel, downloads it, checks its signature and restarts into i
 - [What protects an update](#what-protects-an-update)
 - [macOS while the build is ad-hoc signed](#macos-while-the-build-is-ad-hoc-signed)
 - [Windows](#windows)
+- [Linux](#linux)
 - [Trying an update between two local builds](#trying-an-update-between-two-local-builds)
 - [Where the code is](#where-the-code-is)
 
 ## What the user sees
 
-- **Check for Updates…** in the app menu on macOS (under About Tabler) and in Help on Windows.
+- **Check for Updates…** in the app menu on macOS (under About Tabler) and in Help on Windows
+  and Linux.
   It opens a small dialog: "Tabler is up to date", or the new version with what changed.
 - **Download Update** downloads with a progress bar (Cancel stops it). The download is verified
   before anything else happens.
@@ -36,7 +38,7 @@ build of its own channel, downloads it, checks its signature and restarts into i
 
 Nobody bumps a version by hand. Every build that is published gets the next number:
 
-- Each push to `main` queues a build. After CI and both installers pass, the workflow tags the
+- Each push to `main` queues a build. After CI and every installer pass, the workflow tags the
   exact commit and publishes a numbered release, then refreshes the rolling Nightly preview.
   Versions increase by one patch from the highest plain `v*` tag. A failed build or CI run leaves
   the previous release available. If publishing stops after tagging, a retry reuses that version.
@@ -96,13 +98,16 @@ someone three versions behind reads what all three brought.
 `.github/workflows/build.yml` builds the installers and, with the signing key, the updater
 bundles next to them:
 
-| Platform | Updater bundle                   | Signature                            |
-| -------- | -------------------------------- | ------------------------------------ |
-| macOS    | `Tabler.app.tar.gz` (universal)  | `Tabler.app.tar.gz.sig`              |
-| Windows  | `Tabler_<version>_x64-setup.exe` | `Tabler_<version>_x64-setup.exe.sig` |
-| Windows  | `Tabler_<version>_x64_en-US.msi` | `Tabler_<version>_x64_en-US.msi.sig` |
+| Platform | Updater bundle                    | Signature                             |
+| -------- | --------------------------------- | ------------------------------------- |
+| macOS    | `Tabler.app.tar.gz` (universal)   | `Tabler.app.tar.gz.sig`               |
+| Windows  | `Tabler_<version>_x64-setup.exe`  | `Tabler_<version>_x64-setup.exe.sig`  |
+| Windows  | `Tabler_<version>_x64_en-US.msi`  | `Tabler_<version>_x64_en-US.msi.sig`  |
+| Linux    | `Tabler_<version>_amd64.AppImage` | `Tabler_<version>_amd64.AppImage.sig` |
+| Linux    | `Tabler_<version>_amd64.deb`      | `Tabler_<version>_amd64.deb.sig`      |
+| Linux    | `Tabler-<version>-1.x86_64.rpm`   | `Tabler-<version>-1.x86_64.rpm.sig`   |
 
-On Windows the installers are their own updater bundles. The publish job then writes
+On Windows and Linux the installers are their own updater bundles. The publish job then writes
 `latest.json` with `dev/scripts/updater-manifest.mjs`, tags the commit `v<version>` (builds of
 `main`) and uploads everything to the numbered release. It writes a manifest with matching asset
 URLs for the rolling Nightly preview:
@@ -130,7 +135,8 @@ URLs for the rolling Nightly preview:
 
 - The app looks for `{os}-{arch}-{installer}` first and `{os}-{arch}` second, so an MSI install
   is updated with the MSI and a setup `.exe` install with the setup `.exe`. (The macOS entries
-  are also listed as `darwin-*-app`.)
+  are also listed as `darwin-*-app`; the Linux AppImage also as `linux-x86_64`, and a `.deb` or
+  `.rpm` install asks for `linux-x86_64-deb` or `linux-x86_64-rpm`.)
 - The script refuses to write the file when a signature was made for another version than the
   release's, which the app would refuse as well (see below).
 
@@ -229,6 +235,12 @@ asks for an administrator password during Install and Restart.
   elevation (UAC), as the first install did.
 - The builds are not code-signed, so SmartScreen may warn about the downloaded installer the way
   it does on the first install.
+
+## Linux
+
+- An AppImage replaces its own file and restarts; it must be in a folder the user can write.
+- A `.deb` or `.rpm` install updates through `dpkg -i` or `rpm -U`, which asks for the
+  administrator password (pkexec) the way the first install did.
 
 ## Trying an update between two local builds
 

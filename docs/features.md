@@ -65,7 +65,7 @@ The native macOS menu bar is wired to the same actions as the app:
 | Help       | Changelog, Report a Bug / Send Feedback… (the project's releases and issue tracker), Enable SSH Debug Log, Show Log File                                    |
 
 The app menu has **About Tabler** (the build's version and commit) and **Check for Updates…**
-(in Help on Windows): see [updates.md](updates.md).
+(in Help on Windows and Linux): see [updates.md](updates.md).
 
 Menu shortcuts only act when the focused part of the page does not handle the key itself.
 
@@ -99,7 +99,8 @@ Menu shortcuts only act when the focused part of the page does not handle the ke
 
 ### Passwords
 
-- Passwords live in the macOS Keychain, never in plain files.
+- Passwords live in the system keychain (macOS Keychain, Windows Credential Manager, the Secret
+  Service on Linux), never in plain files.
 - Password storage per connection: Keychain / Ask every time / No password.
 - IAM ("Command Line") passwords with token refresh.
 

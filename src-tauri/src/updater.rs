@@ -370,8 +370,9 @@ pub fn cancel(state: &UpdaterState) {
     }
 }
 
-/// Installs the downloaded update: on macOS the new `.app` takes the place of the running one
-/// (the caller then restarts); on Windows the installer starts and the process ends here.
+/// Installs the downloaded update: on macOS the new `.app` takes the place of the running one,
+/// on Linux the new AppImage (or the `.deb` / `.rpm` through its package manager) does (the
+/// caller then restarts); on Windows the installer starts and the process ends here.
 /// Off the main thread: macOS may need to ask for an administrator password, and that dialog is
 /// run on the main thread while this waits for it.
 pub async fn install(state: &UpdaterState) -> Result<(), AppError> {
