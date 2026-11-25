@@ -248,10 +248,11 @@ describe("AppearanceSettings", () => {
     const custom: CustomTheme = { id: "tnight", name: "Night", base: "dark", tokens: {} };
     useThemes.setState({ themes: [custom] });
     render(<AppearanceSettings />);
+    expect(screen.getByText(/^Auto follows the system appearance\./)).toBeInTheDocument();
     await user.click(screen.getByRole("combobox", { name: "Theme" }));
     const options = (await screen.findAllByRole("option")).map((o) => o.textContent);
     expect(options).toEqual([
-      "Auto (follows macOS)",
+      "Auto (follows system)",
       "Light",
       "Dark",
       "Solarized Light",

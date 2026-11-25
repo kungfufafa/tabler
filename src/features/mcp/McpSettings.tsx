@@ -22,6 +22,7 @@ import {
   type McpConfigPreview,
   type McpInfo,
 } from "@/lib/ipc";
+import { isWindows } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { setPref, usePrefs, type Prefs } from "@/stores/prefs";
 import { diffLines } from "./diff";
@@ -127,14 +128,15 @@ export function McpSettings() {
     } catch {
       // The command is in the message below as well.
     }
+    const terminal = isWindows ? "PowerShell" : "a terminal";
     if (!res.cliFound)
       toast.message(`${label}'s command line tool was not found`, {
-        description: `The command was copied; paste it in a terminal:\n${res.command}`,
+        description: `The command was copied; paste it in ${terminal}:\n${res.command}`,
         duration: 10_000,
       });
     else
       toast.error(`Could not add Tabler to ${label}`, {
-        description: `${res.message}\nThe command was copied to run it yourself.`,
+        description: `${res.message}\nThe command was copied; paste it in ${terminal}.`,
         duration: 10_000,
       });
   };
@@ -213,7 +215,7 @@ export function McpSettings() {
           />
         </SettingRow>
         <SettingRow
-          label="Command"
+          label={isWindows ? "PowerShell command" : "Command"}
           description={
             <>
               <span

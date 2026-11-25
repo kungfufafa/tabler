@@ -309,6 +309,28 @@ describe("startKeepalive", () => {
     stop();
   });
 
+  it("waits for the native ping without mistaking an IPC stall for a lost connection", async () => {
+    let release: (status: ConnStatus) => void = () => {};
+    const ping = vi.fn(() => new Promise<ConnStatus>((resolve) => (release = resolve)));
+    const onResult = vi.fn();
+    const { doc } = fakeDoc();
+    const stop = startKeepalive({
+      ping,
+      connectionIds: () => ["a"],
+      onResult,
+      intervalMs: 60_000,
+      timeoutMs: null,
+      doc,
+    });
+    await vi.advanceTimersByTimeAsync(60_000 + 15_000);
+    expect(ping).toHaveBeenCalledOnce();
+    expect(onResult).not.toHaveBeenCalled();
+    release("connected");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onResult).toHaveBeenCalledExactlyOnceWith("a", "connected");
+    stop();
+  });
+
   it("does not report a deadline that expires after stopping", async () => {
     const onResult = vi.fn();
     const { doc } = fakeDoc();

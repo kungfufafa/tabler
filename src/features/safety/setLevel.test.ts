@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ConnectionProfile, ProfileInput, SafeModeLevel } from "@/lib/ipc";
 import { SEED_PROFILES } from "@/lib/ipc/mock/fixtures";
+import { SECRET_STORE } from "@/lib/platform";
 import { protectedChanges } from "./setLevel";
 
 const PG = SEED_PROFILES.find((p) => p.id === "p-local-pg")!;
@@ -38,7 +39,7 @@ describe("protectedChanges", () => {
     ).toEqual([
       "Switching from Safe Mode 1 to Alert Mode 1.",
       "Turning off Read-only.",
-      "Changing the password storage from Store in keychain to Ask every time.",
+      `Changing the password storage from Store in ${SECRET_STORE} to Ask every time.`,
     ]);
     expect(protectedChanges(safe, input(safe, {}, { password: "new" }))).toEqual([
       "Saving a new password.",

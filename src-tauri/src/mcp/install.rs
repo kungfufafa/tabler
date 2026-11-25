@@ -28,7 +28,10 @@ const MESSAGE_MAX_CHARS: usize = 600;
 
 /// The executable to register: the running one, symlinks resolved.
 pub fn executable(current_exe: &Path) -> PathBuf {
-    std::fs::canonicalize(current_exe).unwrap_or_else(|_| current_exe.to_path_buf())
+    let exe = std::fs::canonicalize(current_exe).unwrap_or_else(|_| current_exe.to_path_buf());
+    #[cfg(windows)]
+    let exe = dunce::simplified(&exe).to_path_buf();
+    exe
 }
 
 /// `s` as one POSIX shell word: unchanged when it only holds safe characters, else in single
@@ -44,9 +47,23 @@ pub fn shell_quote(s: &str) -> String {
     }
 }
 
-/// `<exe> --mcp`, quoted for a shell.
+#[cfg(windows)]
+fn powershell_quote(s: &str) -> String {
+    format!(
+        "'{}'",
+        s.replace('\'', "''").replace('‘', "‘‘").replace('’', "’’")
+    )
+}
+
+/// `<exe> --mcp`, quoted for the platform's terminal.
 pub fn command_line(exe: &Path) -> String {
-    format!("{} {MCP_FLAG}", shell_quote(&exe.to_string_lossy()))
+    let exe = exe.to_string_lossy();
+    #[cfg(windows)]
+    {
+        format!("& {} {MCP_FLAG}", powershell_quote(&exe))
+    }
+    #[cfg(not(windows))]
+    format!("{} {MCP_FLAG}", shell_quote(&exe))
 }
 
 /// Why a registered path may stop working.
@@ -114,11 +131,17 @@ fn cli_remove_args(client: McpClient) -> Vec<String> {
 /// The command line a user pastes in a terminal to register Tabler.
 pub fn cli_command(client: McpClient, exe: &Path) -> Option<String> {
     let cli = cli_name(client)?;
-    let words: Vec<String> = std::iter::once(cli.to_string())
-        .chain(cli_add_args(client, exe))
-        .map(|w| shell_quote(&w))
-        .collect();
-    Some(words.join(" "))
+    let mut args = cli_add_args(client, exe);
+    #[cfg(windows)]
+    {
+        let path_index = args.len() - 2;
+        args[path_index] = powershell_quote(&args[path_index]);
+    }
+    #[cfg(not(windows))]
+    for arg in &mut args {
+        *arg = shell_quote(arg);
+    }
+    Some(format!("{cli} {}", args.join(" ")))
 }
 
 fn home() -> Option<PathBuf> {
@@ -454,16 +477,43 @@ mod tests {
 
     #[test]
     fn command_line_of_the_bundled_app() {
-        assert_eq!(command_line(Path::new(APP)), format!("{APP} --mcp"));
-        assert_eq!(
-            command_line(Path::new(
-                "/Users/me/My Apps/Tabler.app/Contents/MacOS/tabler"
-            )),
-            "'/Users/me/My Apps/Tabler.app/Contents/MacOS/tabler' --mcp"
-        );
+        #[cfg(not(windows))]
+        {
+            assert_eq!(command_line(Path::new(APP)), format!("{APP} --mcp"));
+            assert_eq!(
+                command_line(Path::new(
+                    "/Users/me/My Apps/Tabler.app/Contents/MacOS/tabler"
+                )),
+                "'/Users/me/My Apps/Tabler.app/Contents/MacOS/tabler' --mcp"
+            );
+        }
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
         assert_eq!(shell_quote(""), "''");
         assert_eq!(shell_quote("--scope"), "--scope");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_mcp_commands_and_json_use_the_plain_executable_path() {
+        let exe = executable(Path::new(r"\\?\C:\My Apps\Tabler's $tools\tabler.exe"));
+        let plain = r"C:\My Apps\Tabler's $tools\tabler.exe";
+        let quoted = r"'C:\My Apps\Tabler''s $tools\tabler.exe'";
+        assert_eq!(exe, Path::new(plain));
+        assert_eq!(command_line(&exe), format!("& {quoted} --mcp"));
+        assert_eq!(
+            cli_command(McpClient::Codex, &exe).unwrap(),
+            format!("codex mcp add tabler -- {quoted} --mcp")
+        );
+        let json = super::super::config::entry_json(&config_entry(McpClient::Cursor, &exe));
+        assert_eq!(
+            json,
+            serde_json::json!({"command": plain, "args": ["--mcp"]})
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("tabler.exe");
+        std::fs::write(&real, b"").unwrap();
+        assert!(!executable(&real).to_string_lossy().starts_with(r"\\?\"));
     }
 
     #[test]
@@ -510,13 +560,18 @@ mod tests {
     #[test]
     fn cli_commands() {
         let exe = Path::new(APP);
+        let app = if cfg!(windows) {
+            format!("'{APP}'")
+        } else {
+            APP.to_string()
+        };
         assert_eq!(
             cli_command(McpClient::ClaudeCode, exe).unwrap(),
-            format!("claude mcp add --scope user tabler -- {APP} --mcp")
+            format!("claude mcp add --scope user tabler -- {app} --mcp")
         );
         assert_eq!(
             cli_command(McpClient::Codex, exe).unwrap(),
-            format!("codex mcp add tabler -- {APP} --mcp")
+            format!("codex mcp add tabler -- {app} --mcp")
         );
         assert_eq!(cli_command(McpClient::Cursor, exe), None);
         assert_eq!(

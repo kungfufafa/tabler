@@ -23,6 +23,7 @@ import type {
   SshPasswordMode,
   SslNegotiation,
 } from "@/lib/ipc";
+import { SECRET_STORE } from "@/lib/platform";
 import { ACCENT_PRESETS, HEX_COLOR, isHexColor } from "@/lib/theme";
 import { normalizePath } from "./groups";
 
@@ -62,7 +63,7 @@ export const PASSWORD_MODES = [
   "command",
 ] as const satisfies readonly PasswordMode[];
 export const PASSWORD_MODE_LABEL: Record<PasswordMode, string> = {
-  keychain: "Store in keychain",
+  keychain: `Store in ${SECRET_STORE}`,
   ask: "Ask every time",
   none: "No password",
   command: "Command Line (IAM authentication)",
