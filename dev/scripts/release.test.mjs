@@ -521,6 +521,9 @@ describe("latest.json", () => {
     { name: "Tabler.app.tar.gz", signature: sig("Tabler.app.tar.gz", version) },
     { name: "Tabler_0.1.7_x64-setup.exe", signature: sig("setup.exe", version) },
     { name: "Tabler_0.1.7_x64_en-US.msi", signature: sig("x.msi", version) },
+    { name: "Tabler_0.1.7_amd64.AppImage", signature: sig("x.AppImage", version) },
+    { name: "Tabler_0.1.7_amd64.deb", signature: sig("x.deb", version) },
+    { name: "Tabler-0.1.7-1.x86_64.rpm", signature: sig("x.rpm", version) },
   ];
 
   it("maps each updater bundle to the targets the app asks for", () => {
@@ -535,6 +538,12 @@ describe("latest.json", () => {
       "windows-x86_64",
     ]);
     assert.deepEqual(targetsOf("Tabler_0.1.0_x64_en-US.msi"), ["windows-x86_64-msi"]);
+    assert.deepEqual(targetsOf("Tabler_0.1.0_amd64.AppImage"), [
+      "linux-x86_64-appimage",
+      "linux-x86_64",
+    ]);
+    assert.deepEqual(targetsOf("Tabler_0.1.0_amd64.deb"), ["linux-x86_64-deb"]);
+    assert.deepEqual(targetsOf("Tabler-0.1.0-1.x86_64.rpm"), ["linux-x86_64-rpm"]);
     assert.deepEqual(targetsOf("Tabler_0.1.0_universal.dmg"), []);
     assert.deepEqual(targetsOf("latest.json"), []);
   });
@@ -561,6 +570,10 @@ describe("latest.json", () => {
       "darwin-aarch64-app",
       "darwin-x86_64",
       "darwin-x86_64-app",
+      "linux-x86_64",
+      "linux-x86_64-appimage",
+      "linux-x86_64-deb",
+      "linux-x86_64-rpm",
       "windows-x86_64",
       "windows-x86_64-msi",
       "windows-x86_64-nsis",
@@ -575,6 +588,16 @@ describe("latest.json", () => {
     assert.equal(
       manifest.platforms["windows-x86_64-msi"].url,
       `${baseUrl}/Tabler_0.1.7_x64_en-US.msi`,
+    );
+    assert.equal(manifest.platforms["linux-x86_64"], manifest.platforms["linux-x86_64-appimage"]);
+    assert.equal(
+      manifest.platforms["linux-x86_64-appimage"].url,
+      `${baseUrl}/Tabler_0.1.7_amd64.AppImage`,
+    );
+    assert.equal(manifest.platforms["linux-x86_64-deb"].url, `${baseUrl}/Tabler_0.1.7_amd64.deb`);
+    assert.equal(
+      manifest.platforms["linux-x86_64-rpm"].url,
+      `${baseUrl}/Tabler-0.1.7-1.x86_64.rpm`,
     );
   });
 
@@ -619,6 +642,6 @@ describe("latest.json", () => {
     assert.equal(manifest.version, version);
     assert.equal(manifest.notes, "- feat: updates\n- fix: sidebar");
     assert.ok(!Number.isNaN(Date.parse(manifest.pub_date)));
-    assert.equal(Object.keys(manifest.platforms).length, 7);
+    assert.equal(Object.keys(manifest.platforms).length, 11);
   });
 });

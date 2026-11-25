@@ -1,7 +1,7 @@
 //! Who is on the other end of a connection to the tunnel's local port. TablePlus's tunnel "only
 //! accepts connections from TablePlus"; Tabler's does the same: every accepted connection must
 //! come from a socket of this process (the database drivers) or of one of its child processes
-//! (`pg_dump` / `mysqldump` of Backup / Restore). Anything else on the Mac is refused before a
+//! (`pg_dump` / `mysqldump` of Backup / Restore). Anything else on the machine is refused before a
 //! byte is forwarded.
 //!
 //! The listener is TCP on 127.0.0.1, where macOS has no peer credentials (`LOCAL_PEERPID` only
@@ -11,9 +11,13 @@
 //! with their addresses. A connection is ours when one of those sockets has exactly that
 //! (local, remote) address pair.
 //!
-//! When the lookup itself cannot run (libproc refuses to list this very process), the connection
-//! is let through with a warning: the check must never break the app's own tunnel. On other
-//! platforms the check is not implemented and every local connection is accepted.
+//! On Linux the same pair is looked up in `/proc/net/tcp` for the client socket's inode, which
+//! must be an open descriptor of this process or a descendant (`/proc/<pid>/fd`).
+//!
+//! When the lookup itself cannot run (libproc refuses to list this very process, `/proc` is not
+//! readable), the connection is let through with a warning: the check must never break the app's
+//! own tunnel. On other platforms (Windows) the check is not implemented and every local
+//! connection is accepted.
 
 use std::net::SocketAddr;
 
@@ -218,7 +222,138 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Linux: the client socket's inode comes from `/proc/net/tcp` (or `tcp6`), keyed by the
+/// (local, remote) address pair; the connection is ours when that inode is among the open file
+/// descriptors (`/proc/<pid>/fd`, `socket:[inode]`) of this process or a descendant.
+#[cfg(target_os = "linux")]
+mod imp {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    use super::PeerOwner;
+
+    const MAX_PROCESSES: usize = 512;
+    const MAX_DEPTH: usize = 4;
+
+    /// One `/proc/net/tcp{,6}` address, `0100007F:1F90`: the IP as the kernel's raw words in
+    /// hex, the port in hex. IPv4-mapped IPv6 addresses come back as IPv4.
+    pub(super) fn parse_addr(field: &str) -> Option<SocketAddr> {
+        let (ip, port) = field.split_once(':')?;
+        let port = u16::from_str_radix(port, 16).ok()?;
+        let word = |i: usize| -> Option<[u8; 4]> {
+            Some(
+                u32::from_str_radix(ip.get(i * 8..i * 8 + 8)?, 16)
+                    .ok()?
+                    .to_ne_bytes(),
+            )
+        };
+        let ip = match ip.len() {
+            8 => IpAddr::V4(Ipv4Addr::from(word(0)?)),
+            32 => {
+                let mut bytes = [0u8; 16];
+                for i in 0..4 {
+                    bytes[i * 4..i * 4 + 4].copy_from_slice(&word(i)?);
+                }
+                let v6 = Ipv6Addr::from(bytes);
+                v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4)
+            }
+            _ => return None,
+        };
+        Some(SocketAddr::new(ip, port))
+    }
+
+    /// The inode of the socket with exactly this (local, remote) pair in a `/proc/net/tcp{,6}`
+    /// table.
+    pub(super) fn find_inode(table: &str, local: SocketAddr, remote: SocketAddr) -> Option<u64> {
+        table.lines().skip(1).find_map(|line| {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let (l, r) = (parse_addr(f.get(1)?)?, parse_addr(f.get(2)?)?);
+            if l == local && r == remote {
+                f.get(9)?.parse().ok().filter(|inode| *inode != 0)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Whether `pid` has the socket open; `None` when its descriptors cannot be listed.
+    fn holds(pid: i32, link: &str) -> Option<bool> {
+        let dir = std::fs::read_dir(format!("/proc/{pid}/fd")).ok()?;
+        Some(
+            dir.flatten().any(|fd| {
+                std::fs::read_link(fd.path()).is_ok_and(|target| target.as_os_str() == link)
+            }),
+        )
+    }
+
+    /// Parent pid of every process, from `/proc/<pid>/stat`.
+    fn children_map() -> HashMap<i32, Vec<i32>> {
+        let mut map: HashMap<i32, Vec<i32>> = HashMap::new();
+        let Ok(dir) = std::fs::read_dir("/proc") else {
+            return map;
+        };
+        for entry in dir.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<i32>().ok())
+            else {
+                continue;
+            };
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                continue;
+            };
+            // `pid (comm) state ppid ...`; comm may hold spaces and parentheses.
+            let ppid = stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+                .and_then(|p| p.parse::<i32>().ok());
+            if let Some(ppid) = ppid {
+                map.entry(ppid).or_default().push(pid);
+            }
+        }
+        map
+    }
+
+    pub(super) fn owner(peer: SocketAddr, local: SocketAddr) -> PeerOwner {
+        let tables: Vec<String> = ["/proc/net/tcp", "/proc/net/tcp6"]
+            .iter()
+            .filter_map(|p| std::fs::read_to_string(p).ok())
+            .collect();
+        if tables.is_empty() {
+            return PeerOwner::Unknown;
+        }
+        let Some(inode) = tables.iter().find_map(|t| find_inode(t, peer, local)) else {
+            return PeerOwner::Other;
+        };
+        let link = format!("socket:[{inode}]");
+        let me = std::process::id() as i32;
+        match holds(me, &link) {
+            Some(true) => return PeerOwner::ThisProcess,
+            Some(false) => {}
+            None => return PeerOwner::Unknown,
+        }
+        // Breadth-first through the descendants (Backup's dump binaries, possibly under a shell).
+        let children = children_map();
+        let kids = |pid: i32| children.get(&pid).cloned().unwrap_or_default();
+        let mut seen = HashSet::from([me]);
+        let mut queue: VecDeque<(i32, usize)> = kids(me).into_iter().map(|p| (p, 1)).collect();
+        while let Some((pid, depth)) = queue.pop_front() {
+            if !seen.insert(pid) || seen.len() > MAX_PROCESSES {
+                continue;
+            }
+            if holds(pid, &link) == Some(true) {
+                return PeerOwner::Child(pid);
+            }
+            if depth < MAX_DEPTH {
+                queue.extend(kids(pid).into_iter().map(|p| (p, depth + 1)));
+            }
+        }
+        PeerOwner::Other
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod imp {
     use std::net::SocketAddr;
 
@@ -229,11 +364,12 @@ mod imp {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn parses_a_socket_fdinfo_buffer() {
         let mut buf = vec![0u8; imp_consts::SIZE];
@@ -253,6 +389,22 @@ mod tests {
         assert!(imp::parse_socket_fdinfo(&buf[..100]).is_none());
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finds_a_socket_in_a_proc_net_tcp_table() {
+        let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:EE48 0100007F:1538 01 00000000:00000000 00:00000000 00000000  1000        0 424242 1 0000000000000000 20 4 30 10 -1\n";
+        let client: SocketAddr = "127.0.0.1:61000".parse().unwrap();
+        let listener: SocketAddr = "127.0.0.1:5432".parse().unwrap();
+        assert_eq!(imp::find_inode(table, client, listener), Some(424242));
+        assert_eq!(imp::find_inode(table, listener, client), None);
+        // An IPv4-mapped address in `tcp6` reads as IPv4.
+        assert_eq!(
+            imp::parse_addr("0000000000000000FFFF00000100007F:1538"),
+            Some(listener)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
     mod imp_consts {
         pub const SIZE: usize = 792;
     }
@@ -298,7 +450,7 @@ mod tests {
         let _ = child.kill().await;
 
         // A process that is not ours any more: started in the background by a shell that exits
-        // at once, so it is re-parented to launchd.
+        // at once, so it is re-parented to launchd (init on Linux).
         tokio::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(format!(

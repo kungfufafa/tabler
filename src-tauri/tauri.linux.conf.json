@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["appimage", "deb", "rpm"],
+    "linux": {
+      "appimage": { "bundleMediaFramework": false },
+      "deb": { "section": "database" },
+      "rpm": { "release": "1" }
+    }
+  }
+}

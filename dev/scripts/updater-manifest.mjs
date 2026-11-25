@@ -7,7 +7,8 @@
 //
 // Each updater bundle has its signature beside it (`<file>.sig`, written by `tauri build` with
 // the signing key): the macOS `.app.tar.gz` (one universal build, listed for both
-// architectures), the NSIS `-setup.exe` and the `.msi`. Without any signature (a build made
+// architectures), the NSIS `-setup.exe`, the `.msi`, and on Linux the `.AppImage`, `.deb` and
+// `.rpm`. Without any signature (a build made
 // without the key) nothing is written and the release goes out without `latest.json`.
 //
 // A signature must name the version it was made for, and that version must be the manifest's:
@@ -24,6 +25,10 @@ export function targetsOf(name) {
   // The plain key is what a build that cannot tell its installer asks for: the setup .exe.
   if (name.endsWith("-setup.exe")) return ["windows-x86_64-nsis", "windows-x86_64"];
   if (name.endsWith(".msi")) return ["windows-x86_64-msi"];
+  // Linux: the AppImage replaces itself; a .deb or .rpm install updates through its package.
+  if (name.endsWith(".AppImage")) return ["linux-x86_64-appimage", "linux-x86_64"];
+  if (name.endsWith(".deb")) return ["linux-x86_64-deb"];
+  if (name.endsWith(".rpm")) return ["linux-x86_64-rpm"];
   return [];
 }
 

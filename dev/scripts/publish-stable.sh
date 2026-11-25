@@ -5,7 +5,13 @@ tag=$1
 shift
 version=${tag#v}
 
-for asset in "Tabler_${version}_universal.dmg" "Tabler_${version}_x64-setup.exe" "Tabler_${version}_x64_en-US.msi"; do
+for asset in \
+  "Tabler_${version}_universal.dmg" \
+  "Tabler_${version}_x64-setup.exe" \
+  "Tabler_${version}_x64_en-US.msi" \
+  "Tabler_${version}_amd64.AppImage" \
+  "Tabler_${version}_amd64.deb" \
+  "Tabler-${version}-1.x86_64.rpm"; do
   if [ ! -s "installers/$asset" ]; then
     printf 'Missing release installer: %s\n' "$asset" >&2
     exit 1
