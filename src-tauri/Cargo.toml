@@ -172,6 +172,7 @@ strip = true
 # SQLCipher's crypto: CommonCrypto on macOS, OpenSSL elsewhere. Windows has no system OpenSSL, so
 # it is built from source and linked in statically (needs Perl and NASM at build time).
 [target.'cfg(windows)'.dependencies]
+dunce = "1"
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 # The SSH tunnel's check for a wildcard listener on a pinned port: a dual-stack `[::]` probe
 # needs IPV6_V6ONLY off (already in the lock via tokio).

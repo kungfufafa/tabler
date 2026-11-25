@@ -7629,6 +7629,7 @@ dependencies = [
  "csv",
  "deadpool-postgres",
  "duckdb",
+ "dunce",
  "flate2",
  "futures",
  "hex",
