@@ -15,6 +15,13 @@ const toast = vi.hoisted(() => ({
 vi.mock("sonner", () => ({ toast }));
 const clipboard = vi.hoisted(() => ({ writeClipboard: vi.fn(async () => {}) }));
 vi.mock("@/features/datagrid/clipboard", () => clipboard);
+const platform = vi.hoisted(() => ({ windows: false }));
+vi.mock("@/lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/platform")>()),
+  get isWindows() {
+    return platform.windows;
+  },
+}));
 
 const EXE = "/Applications/Tabler.app/Contents/MacOS/tabler";
 
@@ -34,6 +41,7 @@ const installButton = (name: RegExp) =>
   within(screen.getByRole("group", { name: "Install in" })).getByRole("button", { name });
 
 beforeEach(() => {
+  platform.windows = false;
   resetMockMcp();
   resetPrefsForTests();
   Object.values(toast).forEach((f) => f.mockClear());
@@ -81,6 +89,38 @@ describe("Settings ▸ MCP Server", () => {
     expect(toast.message).toHaveBeenCalledWith(
       "Codex's command line tool was not found",
       expect.objectContaining({ description: expect.stringContaining("paste it in a terminal") }),
+    );
+  });
+
+  it("labels the Windows launch command and copied registration command for PowerShell", async () => {
+    platform.windows = true;
+    setPref("mcpEnabled", true);
+    const exe = String.raw`C:\Users\O'Neil\tabler.exe`;
+    const quoted = String.raw`'C:\Users\O''Neil\tabler.exe'`;
+    const commandLine = `& ${quoted} --mcp`;
+    const registration = `codex mcp add tabler -- ${quoted} --mcp`;
+    const loadInfo = ipc.mcp.info;
+    vi.spyOn(ipc.mcp, "info").mockImplementation(async () => ({
+      ...(await loadInfo()),
+      executable: exe,
+      commandLine,
+    }));
+    vi.spyOn(ipc.mcp, "installCli").mockResolvedValue({
+      ok: false,
+      cliFound: false,
+      command: registration,
+      message: "Codex was not found.",
+    });
+    renderSettings();
+    expect(await screen.findByText(commandLine)).toBeInTheDocument();
+    expect(screen.getByText("PowerShell command")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Copy/ }));
+    await waitFor(() => expect(clipboard.writeClipboard).toHaveBeenCalledWith(commandLine));
+    fireEvent.click(installButton(/Codex/));
+    await waitFor(() => expect(clipboard.writeClipboard).toHaveBeenCalledWith(registration));
+    expect(toast.message).toHaveBeenCalledWith(
+      "Codex's command line tool was not found",
+      expect.objectContaining({ description: expect.stringContaining("paste it in PowerShell") }),
     );
   });
 
