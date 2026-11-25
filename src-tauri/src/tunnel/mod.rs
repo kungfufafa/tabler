@@ -1071,6 +1071,10 @@ pub async fn open_tunnel_to(
 ///
 /// Windows binds `127.0.0.1:P` next to a wildcard listener even without the flag, so there the
 /// wildcard address is checked first ([`wildcard_taken`]).
+///
+/// Linux sets the flag from the start: it still refuses a port another socket listens on, wildcard
+/// or not, and it only lets a socket reuse a port whose closing connections came from a listener
+/// that set the flag too.
 async fn bind_local(port: u16) -> Result<TcpListener, AppError> {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let cannot_listen = |e: &dyn Display| AppError::Tunnel(format!("cannot listen on {addr}: {e}"));
@@ -1080,7 +1084,7 @@ async fn bind_local(port: u16) -> Result<TcpListener, AppError> {
             &"the port is already in use (another program listens on it)",
         ));
     }
-    let in_use = match listen_local(addr, false) {
+    let in_use = match listen_local(addr, cfg!(target_os = "linux")) {
         Ok(listener) => return Ok(listener),
         Err(e) if port != 0 && e.kind() == io::ErrorKind::AddrInUse => e,
         Err(e) => return Err(cannot_listen(&e)),
