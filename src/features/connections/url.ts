@@ -18,6 +18,7 @@ import type {
   SafeModeLevel,
   SslMode,
 } from "@/lib/ipc";
+import { isWindows } from "@/lib/platform";
 import { useAppInfoStore } from "@/stores/appInfo";
 import { ACCENT_PRESETS, isHexColor, type AccentPreset } from "@/lib/theme";
 import { parseHex } from "./colors";
@@ -644,9 +645,11 @@ export function parseConnectionUrl(
     // sqlite:///abs/path, sqlite:/abs/path or sqlite://~/path; the query names the target.
     const [pathPart, query = ""] = text.slice(scheme.length + 1).split("?") as [string, string?];
     const rest = decode(pathPart);
-    const path = rest.startsWith("//") ? rest.slice(2) : rest;
+    const urlPath = rest.startsWith("//") ? rest.slice(2) : rest;
+    const drivePath = isWindows && /^\/[a-z]:\//i.test(urlPath);
+    const path = drivePath ? urlPath.slice(1) : urlPath;
     if (path === "" || path === "/") throw new Error("The URL has no database file path.");
-    if (!path.startsWith("/") && !path.startsWith("~/"))
+    if (!drivePath && !path.startsWith("/") && !path.startsWith("~/"))
       throw new Error("Use an absolute path to the database file.");
     const params = new URLSearchParams(query);
     const values: Partial<ConnectionFormValues> = {
@@ -880,7 +883,8 @@ export function profileToUrl(p: ConnectionProfile, password: string | null = nul
       // The file's path on the SSH server: `~/…` as is, else from the root.
       return `sqlite+ssh://${sshAuthority(ssh)}/${path.replace(/^\/+/, "")}?${query.toString()}`;
     }
-    return `sqlite://${path}?${query.toString()}`;
+    const urlPath = isWindows && /^[a-z]:\//i.test(path) ? `/${path}` : path;
+    return `sqlite://${urlPath}?${query.toString()}`;
   }
   const scheme = p.driver === "postgres" ? "postgresql" : "mysql";
   const user = p.user ? enc(p.user) + (password ? `:${enc(password)}` : "") + "@" : "";

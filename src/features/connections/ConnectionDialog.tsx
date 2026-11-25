@@ -326,7 +326,7 @@ const SSL_NEGOTIATION_LABEL: Record<SslNegotiation, string> = {
 };
 
 const SSH_PASSWORD_MODE_LABEL: Record<SshPasswordMode, string> = {
-  keychain: "Store in keychain",
+  keychain: PASSWORD_MODE_LABEL.keychain,
   ask: "Ask every time",
   none: "No password",
 };

@@ -24,6 +24,11 @@ vi.mock("sonner", () => ({
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), message: vi.fn() }),
 }));
 
+vi.mock("@/lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/platform")>()),
+  SECRET_STORE: "Windows Credential Manager",
+}));
+
 const SQLITE = SEED_PROFILES.find((p) => p.id === "p-sample-sqlite")!;
 const STAGING = SEED_PROFILES.find((p) => p.id === "p-staging-ssh")!;
 
@@ -1016,6 +1021,22 @@ describe("ConnectionDialog — conn3a options", () => {
     await user.click(within(form).getByRole("button", { name: "Save" }));
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0]![0].profile.options.bootstrapScript).toBe("cloud-sql-proxy &");
+  });
+
+  it("names Windows Credential Manager in both password storage dropdowns", async () => {
+    const user = userEvent.setup();
+    renderDialog({
+      profile: { ...STAGING, ssh: { ...STAGING.ssh!, auth: "password", keyPath: null } },
+    });
+    const form = await screen.findByRole("dialog", { name: `Edit ${STAGING.name}` });
+    for (const label of ["Password storage", "SSH password storage"]) {
+      within(form).getByRole("combobox", { name: label }).focus();
+      await user.keyboard("{Enter}");
+      expect(
+        await screen.findByRole("option", { name: "Store in Windows Credential Manager" }),
+      ).toBeInTheDocument();
+      await user.keyboard("{Escape}");
+    }
   });
 
   it("SSH password storage: Ask every time sends no stored password", async () => {

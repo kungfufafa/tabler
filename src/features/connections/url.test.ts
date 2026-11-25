@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConnectionProfile } from "@/lib/ipc";
 import { ACCENT_PRESETS } from "@/lib/theme";
 import { connectionFormSchema, formToProfileInput, urlToForm } from "./schema";
@@ -12,6 +12,18 @@ import {
   splitParams,
   statusColorOf,
 } from "./url";
+
+const platform = vi.hoisted(() => ({ windows: false }));
+vi.mock("@/lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/platform")>()),
+  get isWindows() {
+    return platform.windows;
+  },
+}));
+
+afterEach(() => {
+  platform.windows = false;
+});
 
 const base: ConnectionProfile = {
   id: "00000000-0000-0000-0000-000000000001",
@@ -87,6 +99,21 @@ describe("parseConnectionUrl", () => {
       name: "app.sqlite",
     });
     expect(parseConnectionUrl("sqlite:/tmp/a%20b.db").values.sqlitePath).toBe("/tmp/a b.db");
+  });
+
+  it("normalizes Windows drive paths only for local SQLite URLs on Windows", () => {
+    const url = "sqlite:///C:/Users/Administrator/a%20b.sqlite";
+    expect(parseConnectionUrl(url).values.sqlitePath).toBe("/C:/Users/Administrator/a b.sqlite");
+
+    platform.windows = true;
+    const path = parseConnectionUrl(url).values.sqlitePath;
+    expect(path).toBe("C:/Users/Administrator/a b.sqlite");
+    const exported = profileToUrl({ ...base, driver: "sqlite", sqlitePath: path ?? null });
+    expect(exported).toMatch(/^sqlite:\/\/\/C:\/Users\/Administrator\/a%20b\.sqlite\?/);
+    expect(parseConnectionUrl(exported).values.sqlitePath).toBe(path);
+    expect(parseConnectionUrl("sqlite+ssh://me@host/C:/remote.sqlite").values.sqlitePath).toBe(
+      "/C:/remote.sqlite",
+    );
   });
 
   it("reads TablePlus's env and safe-mode parameters", () => {
