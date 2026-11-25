@@ -56,7 +56,12 @@ let nextHistoryId = 1;
 
 function seedHistory(): void {
   const day = 86_400_000;
-  const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
+  const now = Date.now();
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const at = (msAgo: number) => new Date(now - msAgo).toISOString();
+  const atToday = (msAgo: number) =>
+    new Date(Math.max(now - msAgo, startOfToday.getTime())).toISOString();
   const base = {
     profileId: "p-local-pg",
     connectionName: "Local Postgres",
@@ -98,7 +103,7 @@ function seedHistory(): void {
       ...base,
       id: 4,
       sql: "select count(*) from events_big",
-      startedAt: at(600_000),
+      startedAt: atToday(600_000),
       durationMs: 41,
       rowCount: 1,
     },
