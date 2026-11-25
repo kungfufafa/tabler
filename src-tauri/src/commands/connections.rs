@@ -25,6 +25,7 @@ use crate::types::profile::{
 };
 
 pub const EVENT_CONNECTION_STATUS: &str = "connection:status";
+const PING_TIMEOUT: Duration = Duration::from_secs(8);
 pub const EVENT_TUNNEL_STATUS: &str = "tunnel:status";
 /// An SSH server asks a keyboard-interactive (2FA) question (`SshPromptRequest`).
 pub const EVENT_SSH_PROMPT: &str = "ssh:prompt";
@@ -622,8 +623,19 @@ pub async fn ping(
     let result = match conn.tunnel.as_ref().map(TunnelHandle::state) {
         Some(t) if !t.is_up() => Err(AppError::Tunnel(
             t.message.unwrap_or_else(|| "the SSH session ended".into()),
-        )),
-        _ => conn.any_session().await.ping().await,
+        )
+        .to_string()),
+        _ => match tokio::time::timeout(PING_TIMEOUT, async {
+            conn.any_session().await.ping().await
+        })
+        .await
+        {
+            Ok(result) => result.map_err(|error| error.to_string()),
+            Err(_) => Err(format!(
+                "The server did not answer within {} s.",
+                PING_TIMEOUT.as_secs()
+            )),
+        },
     };
     match result {
         Ok(()) => {
@@ -633,9 +645,9 @@ pub async fn ping(
             }
             Ok(ConnStatus::Connected)
         }
-        Err(e) => {
+        Err(message) => {
             conn.status.send_replace(ConnStatus::Lost);
-            emit_status(&app, connection_id, ConnStatus::Lost, Some(e.to_string()));
+            emit_status(&app, connection_id, ConnStatus::Lost, Some(message));
             Ok(ConnStatus::Lost)
         }
     }

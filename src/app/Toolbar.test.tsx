@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -500,6 +501,46 @@ describe("Toolbar", () => {
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(verify).toHaveBeenLastCalledWith("p-a", "pw");
     expect(save.mock.calls[0]![0].profile.options.safeMode).toBe("silent");
+  });
+
+  it("moves keyboard focus from the menu into name authorization and submits there", async () => {
+    const user = userEvent.setup();
+    const profile = {
+      id: "p-a",
+      name: "Conn a",
+      driver: "postgres",
+      options: { safeMode: "safe", passwordMode: "none" },
+    } as ConnectionProfile;
+    vi.mocked(ipc.profiles.list).mockResolvedValue([profile]);
+    vi.spyOn(ipc.profiles, "get").mockResolvedValue(profile);
+    const save = vi.spyOn(ipc.profiles, "save").mockImplementation(async (i) => i.profile);
+    useConnectionsStore.getState().add(info("a"));
+    useConnectionDialog.setState({ open: false, profile: null, prefill: null });
+    wrap(
+      <>
+        <Toolbar launcher={false} />
+        <SafetyHost />
+      </>,
+    );
+    const lock = await screen.findByRole("button", { name: "Safe mode: Safe Mode 1" });
+    lock.focus();
+    await user.keyboard("{Enter}");
+    await user.click(await screen.findByRole("menuitemradio", { name: /^Silent Mode/ }));
+
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "Type the name of Conn a to continue",
+    });
+    const field = within(dialog).getByRole("textbox", { name: "Connection name" });
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(field).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    await user.tab();
+    expect(field).toHaveFocus();
+    await user.keyboard("Conn a{Enter}");
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0].profile.options.safeMode).toBe("silent");
+    expect(useConnectionDialog.getState().open).toBe(false);
   });
 
   it("the menu's Edit Connection… opens the connection's form", async () => {

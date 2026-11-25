@@ -96,6 +96,7 @@ function SafeModeLock() {
   const [busy, setBusy] = useState(false);
   /** Set when a menu item opened a dialog: the closing menu leaves focus to it. */
   const openedDialog = useRef(false);
+  const pendingLevel = useRef<SafeModeLevel | null>(null);
   const readOnly = active?.info.readOnly ?? false;
   const profile = profiles.data?.find((p) => p.id === active?.info.profileId) ?? null;
   const level = effectiveLevel(profile?.options.safeMode);
@@ -164,6 +165,10 @@ function SafeModeLock() {
         onCloseAutoFocus={(e) => {
           if (openedDialog.current) e.preventDefault();
           openedDialog.current = false;
+          // Release the menu's focus scope before a downgrade can open a modal.
+          const next = pendingLevel.current;
+          pendingLevel.current = null;
+          if (next !== null) void choose(next);
         }}
       >
         <DropdownMenuLabel className="truncate">
@@ -171,7 +176,9 @@ function SafeModeLock() {
         </DropdownMenuLabel>
         <DropdownMenuRadioGroup
           value={level}
-          onValueChange={(v) => void choose(v as SafeModeLevel)}
+          onValueChange={(v) => {
+            pendingLevel.current = v as SafeModeLevel;
+          }}
         >
           {SAFE_MODE_OPTIONS.map((o) => (
             <DropdownMenuRadioItem

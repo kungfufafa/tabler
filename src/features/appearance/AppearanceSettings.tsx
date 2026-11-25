@@ -148,7 +148,7 @@ function ThemeSelect() {
       </SelectTrigger>
       <SelectContent data-scope="dialog">
         <SelectItem value="system" className="text-xs">
-          Auto (follows macOS)
+          Auto (follows system)
         </SelectItem>
         {BUILTIN_THEMES.map((t) => (
           <SelectItem key={t.id} value={t.id} className="text-xs">
@@ -214,7 +214,7 @@ function ThemeGroup({ selection }: { selection: ThemeSelection }) {
       <SettingRow
         id="pref-theme"
         label="Theme"
-        description="Auto follows the macOS appearance. A theme applies to the whole app at once, native menus and dialogs included."
+        description="Auto follows the system appearance. A theme applies to the whole app at once, native menus and dialogs included."
       >
         <ThemeSelect />
       </SettingRow>

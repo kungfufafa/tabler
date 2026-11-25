@@ -6,6 +6,7 @@ import { useAction } from "@/features/palette/actions";
 import {
   IpcError,
   ipc,
+  isMock,
   onConnectionFailure,
   toIpcError,
   type ConnStatus,
@@ -26,6 +27,9 @@ export const KEEPALIVE_INTERVAL_MS = 60_000;
  */
 export const PING_TIMEOUT_MS = 8_000;
 
+// The desktop backend times the driver, not the round trip through the WebView IPC bridge.
+const rendererPingTimeoutMs = isMock ? PING_TIMEOUT_MS : null;
+
 export function pingTimeoutError(ms: number = PING_TIMEOUT_MS): IpcError {
   return new IpcError({
     code: "TIMEOUT",
@@ -33,11 +37,12 @@ export function pingTimeoutError(ms: number = PING_TIMEOUT_MS): IpcError {
   });
 }
 
-/** Races a ping against a deadline; rejects with `pingTimeoutError` when the server stays silent. */
+/** Gives the browser mock a deadline; native pings carry their own. */
 export function pingWithDeadline(
   ping: Promise<ConnStatus>,
-  ms: number = PING_TIMEOUT_MS,
+  ms: number | null = rendererPingTimeoutMs,
 ): Promise<ConnStatus> {
+  if (ms === null) return ping;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(pingTimeoutError(ms)), ms);
@@ -210,8 +215,8 @@ export interface KeepaliveOptions {
   connectionIds: () => readonly string[];
   onResult: (connectionId: string, status: ConnStatus | null, error?: unknown) => void;
   intervalMs?: number;
-  /** A ping still pending after this long is reported as a failure (see `PING_TIMEOUT_MS`). */
-  timeoutMs?: number;
+  /** Mock deadline; null waits for the native ping to report its own result. */
+  timeoutMs?: number | null;
   doc?: VisibilityDoc;
   now?: () => number;
 }
@@ -219,13 +224,12 @@ export interface KeepaliveOptions {
 /**
  * Pings every open connection each `intervalMs` while the document is visible, so a dropped
  * connection surfaces (banner) before the user's next query. Pauses while hidden and catches up
- * on return when a beat was missed. A ping that does not answer within `timeoutMs` is reported as
- * a failure right away; the connection is not pinged again until that ping settles (its late
- * answer is still reported, so a recovery shows up). Returns a stop function.
+ * on return when a beat was missed. Each connection keeps one ping in flight. A mock deadline
+ * may report a failure while the ping is pending; its late answer still counts.
  */
 export function startKeepalive(opts: KeepaliveOptions): () => void {
   const intervalMs = opts.intervalMs ?? KEEPALIVE_INTERVAL_MS;
-  const timeoutMs = opts.timeoutMs ?? PING_TIMEOUT_MS;
+  const timeoutMs = opts.timeoutMs === undefined ? rendererPingTimeoutMs : opts.timeoutMs;
   const doc = opts.doc ?? document;
   const now = opts.now ?? Date.now;
   const inFlight = new Set<string>();
@@ -239,12 +243,16 @@ export function startKeepalive(opts: KeepaliveOptions): () => void {
     for (const id of opts.connectionIds()) {
       if (inFlight.has(id)) continue;
       inFlight.add(id);
-      const deadline = setTimeout(() => {
-        deadlines.delete(deadline);
-        if (!stopped) opts.onResult(id, null, pingTimeoutError(timeoutMs));
-      }, timeoutMs);
-      deadlines.add(deadline);
+      const deadline =
+        timeoutMs === null
+          ? null
+          : setTimeout(() => {
+              if (deadline !== null) deadlines.delete(deadline);
+              if (!stopped) opts.onResult(id, null, pingTimeoutError(timeoutMs));
+            }, timeoutMs);
+      if (deadline !== null) deadlines.add(deadline);
       const settle = () => {
+        if (deadline === null) return;
         clearTimeout(deadline);
         deadlines.delete(deadline);
       };
