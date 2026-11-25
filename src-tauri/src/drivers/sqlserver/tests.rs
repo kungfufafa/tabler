@@ -1206,6 +1206,25 @@ async fn workers_are_reused_and_a_broken_one_replaced() {
 }
 
 #[tokio::test]
+async fn dropping_a_stalled_ping_does_not_block_table_browsing() {
+    let server = fake(|r| match r {
+        Request::Batch(sql) if sql == tsql::PING => Some(Reply::Stuck(Vec::new())),
+        _ => None,
+    });
+    let s = session(&server, &plain()).await;
+    tokio::select! {
+        result = s.ping() => panic!("the ping should still be pending: {result:?}"),
+        () = until(&server, |r| is_batch(r, tsql::PING)) => {},
+    }
+    assert_eq!(server.logins(), 2, "the editor and the hung ping worker");
+    tokio::time::timeout(Duration::from_secs(2), s.list_tables("dbo"))
+        .await
+        .expect("the catalog query does not wait for the ping")
+        .unwrap();
+    assert_eq!(server.logins(), 3, "the catalog used a new worker");
+}
+
+#[tokio::test]
 async fn close_stops_the_editor_and_returns_quickly() {
     const SLOW: &str = "WAITFOR DELAY '01:00'";
     let server = fake(|r| match r {

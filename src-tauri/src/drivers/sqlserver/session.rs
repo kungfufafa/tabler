@@ -164,6 +164,20 @@ pub(super) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 struct Worker<'a> {
     session: &'a MssqlSession,
     conn: Conn,
+    ping_stop: Option<Stop>,
+}
+
+impl Worker<'_> {
+    async fn ping(&mut self) -> Result<(), AppError> {
+        let stop = Stop::new();
+        self.ping_stop = Some(stop.clone());
+        let result = self
+            .conn
+            .query(tsql::PING, Vec::new(), Mode::Batch, Bytes::Preview, stop)
+            .await;
+        self.ping_stop = None;
+        result.map(|_| ())
+    }
 }
 
 impl std::ops::Deref for Worker<'_> {
@@ -176,6 +190,11 @@ impl std::ops::Deref for Worker<'_> {
 
 impl Drop for Worker<'_> {
     fn drop(&mut self) {
+        if let Some(stop) = self.ping_stop.take() {
+            self.conn.abandon();
+            stop.fire();
+            return;
+        }
         if self.conn.is_broken() || self.session.closing.load(Ordering::SeqCst) {
             return;
         }
@@ -356,6 +375,7 @@ impl MssqlSession {
                     return Ok(Worker {
                         session: self,
                         conn,
+                        ping_stop: None,
                     });
                 }
                 Some(_) => continue,
@@ -366,6 +386,7 @@ impl MssqlSession {
         Ok(Worker {
             session: self,
             conn,
+            ping_stop: None,
         })
     }
 
@@ -570,17 +591,7 @@ impl DbSession for MssqlSession {
         if self.editor_lost.load(Ordering::SeqCst) {
             return Err(AppError::NotConnected);
         }
-        let worker = self.worker().await?;
-        worker
-            .query(
-                tsql::PING,
-                Vec::new(),
-                Mode::Batch,
-                Bytes::Preview,
-                Stop::new(),
-            )
-            .await
-            .map(|_| ())
+        self.worker().await?.ping().await
     }
 
     /// Stops what the editor runs, then closes every connection, all within about 2 s: the idle
