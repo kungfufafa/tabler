@@ -5,7 +5,7 @@ import { flushThemes } from "@/features/appearance/themesStore";
 import { useAction } from "@/features/palette/actions";
 import { ipc, isTauri } from "@/lib/ipc";
 import { listenEvent, listenWindowEvent } from "@/lib/ipc/events";
-import { isWindows } from "@/lib/platform";
+import { windowsChrome } from "@/lib/platform";
 import { flushPrefs } from "@/stores/prefs";
 import { SETTINGS_DRAG_ATTR, SettingsPanel, type SettingsKeys } from "./SettingsPanel";
 import { isSettingsSection, useSettingsDialog } from "./store";
@@ -210,7 +210,7 @@ export function SettingsWindow() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
-  const ownTitleBar = isWindows && isTauri();
+  const ownTitleBar = windowsChrome && isTauri();
 
   return (
     <div

@@ -6,7 +6,7 @@ import { KbdHint } from "@/components/KbdHint";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { actions } from "@/features/palette/actions";
 import { isTauri } from "@/lib/ipc";
-import { isWindows } from "@/lib/platform";
+import { windowsChrome } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { shortcutFor, useKeymapVersion } from "@/lib/keys/keymap";
 import { useConnectionsStore } from "@/stores/connections";
@@ -256,7 +256,7 @@ export function TabStrip({ group = 0, shared = false }: { group?: TabGroup; shar
         <div
           className={cn(
             "border-border flex shrink-0 items-center gap-1 px-1",
-            !isWindows && "border-r",
+            !windowsChrome && "border-r",
           )}
         >
           <BarButton
@@ -285,7 +285,10 @@ export function TabStrip({ group = 0, shared = false }: { group?: TabGroup; shar
         </DndContext>
       )}
       <div
-        className={cn("border-border flex shrink-0 items-center px-1", !isWindows && "border-l")}
+        className={cn(
+          "border-border flex shrink-0 items-center px-1",
+          !windowsChrome && "border-l",
+        )}
       >
         <BarButton
           label="New query"

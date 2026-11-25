@@ -1,5 +1,5 @@
 import { isTauri } from "@/lib/ipc/transport";
-import { isWindows } from "@/lib/platform";
+import { windowsChrome } from "@/lib/platform";
 import {
   loadSavedShape,
   planReshape,
@@ -50,10 +50,10 @@ const fitsWorkspace = (frame: WindowFrame | null): frame is WindowFrame =>
 
 /**
  * macOS: a zoomed window on screen stays a workspace window (the list is drawn inside it).
- * Windows: like TablePlus for Windows, a maximized workspace window still becomes the small
+ * Windows and Linux: like TablePlus for Windows, a maximized workspace window still becomes the small
  * Welcome window, and is maximized again when it next becomes a workspace window.
  */
-const KEEP_ZOOMED: boolean = !isWindows;
+const KEEP_ZOOMED: boolean = !windowsChrome;
 
 /**
  * Gives the window the shape `to` and resolves with the shape it has then. A full-screen window

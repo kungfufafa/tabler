@@ -181,6 +181,9 @@ socket2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
+# Keeps the hidden menu bar hidden when a window is shown (`own_title_bar`; already in the lock
+# via tauri / tao).
+gtk = "0.18"
 
 # Touch ID (LocalAuthentication) and the sleep / screen-lock notifications of the app lock
 # (already in the lock via tao / wry).

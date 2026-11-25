@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { ActionId } from "@/features/palette/actions";
-import { isWindows } from "@/lib/platform";
+import { windowsChrome } from "@/lib/platform";
 import { getPrefs, setPref, usePrefsStore } from "@/stores/prefs";
 import { isMac } from "./combo";
 import {
@@ -487,7 +487,7 @@ export const WINDOWS_KEYMAP: readonly ShortcutDef[] = [
 /** The effective keymap: this platform's built-in bindings, then the user's overrides. */
 export const KEYMAP: ShortcutDef[] = [
   ...platformKeymap(BUILTIN_KEYMAP, isMac),
-  ...(isWindows ? WINDOWS_KEYMAP : []),
+  ...(windowsChrome ? WINDOWS_KEYMAP : []),
 ];
 
 const SCOPE_CHAIN: Record<Scope, Scope[]> = {

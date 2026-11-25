@@ -86,7 +86,7 @@ pub fn set_menu_accelerators(
 }
 
 /// The app menu (File, Edit, View…) as a popup at `x`, `y` (logical pixels in the window): on
-/// Windows the menu bar is hidden and the toolbar's ⋮ button opens it, like TablePlus for Windows.
+/// Windows and Linux the menu bar is hidden and the toolbar's ⋮ button opens it, like TablePlus for Windows.
 /// Its items reach `on_menu_event` like the menu bar's.
 #[tauri::command]
 pub fn popup_app_menu(

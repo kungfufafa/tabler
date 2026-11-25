@@ -32,15 +32,15 @@ pub const MAIN_WINDOW: &str = "main";
 pub const WINDOW_PREFIX: &str = "w-";
 /// How far a new window is offset from the one it was opened from (logical pixels).
 const CASCADE_OFFSET: f64 = 28.0;
-/// macOS and Windows: the Welcome window a workspace window asks for (the connection list in a
+/// The Welcome window a workspace window asks for (the connection list in a
 /// window of its own, like TablePlus). Built at its size and hidden until its renderer has laid
 /// the list out; the window-state plugin leaves it alone (it is always the same size, centred).
 pub const WELCOME_WINDOW: &str = "welcome";
 /// The Welcome window's size in logical pixels (`WELCOME_SIZE` in `src/stores/windowShape.ts`):
-/// TablePlus for Windows's client area is 746×529, the macOS one 760×480.
-#[cfg(windows)]
+/// TablePlus for Windows's client area is 746×529 (Windows and Linux), the macOS one 760×480.
+#[cfg(not(target_os = "macos"))]
 const WELCOME_SIZE: (f64, f64) = (746.0, 529.0);
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 const WELCOME_SIZE: (f64, f64) = (760.0, 480.0);
 /// The Settings window (TablePlus: "The Settings window holds the settings"): one at most, built
 /// on demand at its own size and centred on the window it was opened from.
@@ -55,13 +55,13 @@ pub const EVENT_SETTINGS_SECTION: &str = "settings:section";
 /// preferences and themes are saved after a short debounce) and go.
 const SETTINGS_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
 /// How long a window built hidden may stay so: its renderer shows it once it is laid out (the
-/// Welcome window; every window on Windows and macOS, `tauri.windows.conf.json` and
-/// `tauri.macos.conf.json`), and a renderer that never gets there must not leave a window nobody
+/// Welcome window; every window, `tauri.windows.conf.json`, `tauri.macos.conf.json` and
+/// `tauri.linux.conf.json`), and a renderer that never gets there must not leave a window nobody
 /// can see.
 const HIDDEN_REVEAL: std::time::Duration = std::time::Duration::from_millis(2500);
 
 /// What the window-state plugin keeps of a window. Not the decorations: the app sets those itself
-/// (off on Windows, `own_title_bar`), and a saved "undecorated" would leave a build without its
+/// (off on Windows and Linux, `own_title_bar`), and a saved "undecorated" would leave a build without its
 /// own window buttons with none at all. Not the visibility: a window built hidden is shown by its
 /// renderer once it has its shape (`applyShape`), so it never shows half laid out.
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
@@ -69,7 +69,7 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
     StateFlags::all() - StateFlags::DECORATIONS - StateFlags::VISIBLE
 }
 
-/// The window-state plugin. Windows: the main window's frame is restored by
+/// The window-state plugin. Windows and Linux: the main window's frame is restored by
 /// [`restore_main_frame`] instead, without maximizing it.
 pub fn window_state_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     let builder = tauri_plugin_window_state::Builder::new()
@@ -77,22 +77,22 @@ pub fn window_state_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
         // The Welcome and Settings windows always open at the same size, centred (Settings on the
         // window it was opened from), like TablePlus's.
         .with_denylist(&[WELCOME_WINDOW, SETTINGS_WINDOW]);
-    #[cfg(windows)]
+    #[cfg(not(target_os = "macos"))]
     let builder = builder.skip_initial_state(MAIN_WINDOW);
     builder.build()
 }
 
-/// Windows: the main window's saved size and position, not whether it was maximized. It is built
+/// Windows and Linux: the main window's saved size and position, not whether it was maximized. It is built
 /// hidden and its renderer decides what it shows: the small Welcome window, or the workspace
 /// window, maximized when it was (`rememberMaximized` in `src/stores/windowShape.ts`). Un-maximizing
 /// a hidden window shows it, so it is never maximized before the renderer asks.
 pub fn restore_main_frame<R: Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::Result<()> {
-    #[cfg(windows)]
+    #[cfg(not(target_os = "macos"))]
     {
         use tauri_plugin_window_state::{StateFlags, WindowExt};
         window.restore_state(window_state_flags() - StateFlags::MAXIMIZED)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
         let _ = window;
         Ok(())
@@ -510,10 +510,10 @@ pub fn exits_now(
             || (macos && none_left && aux_left > 0))
 }
 
-/// macOS and Windows, like TablePlus: closing the last workspace window (one that held
+/// Like TablePlus: closing the last workspace window (one that held
 /// connections) with its close button, ⌘W / Alt+F4 or the taskbar shows the Welcome window instead
 /// of ending the app. A quit (File ▸ Quit, ⌘Q, every window asked) still ends it, and so does
-/// closing the Welcome window itself. Linux has no Welcome window (`shapedWindows`).
+/// closing the Welcome window itself. `shaped`: the platform has the Welcome window (all do now).
 pub fn reopens_welcome(
     shaped: bool,
     quitting: bool,
@@ -707,7 +707,7 @@ fn show_welcome_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Option<S
     // Shown by its renderer once the list is laid out (`applyShape`), so it never shows empty.
     config.visible = false;
     let window = WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build())?;
-    #[cfg(windows)]
+    #[cfg(not(target_os = "macos"))]
     if let Err(e) = own_title_bar(&window) {
         log::warn!("could not set up the Welcome window: {e}");
     }
@@ -720,9 +720,9 @@ fn show_welcome_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Option<S
 /// Settings… (⌘,): brings the one Settings window ([`SETTINGS_WINDOW`]) to the front, building it
 /// when it is not open, and shows `section` in it (none: the section it shows, or showed last).
 /// A new window is centred on the window it was opened from (`from`, else the window menu items
-/// act on), at TablePlus's size; it is hidden until its renderer has laid the section out. Windows:
-/// no native title bar (the renderer draws its close button and drag area, like TablePlus);
-/// macOS: a standard title bar titled "Settings"; Linux: the window manager's.
+/// act on), at TablePlus's size; it is hidden until its renderer has laid the section out. Windows
+/// and Linux: no native title bar (the renderer draws its close button and drag area, like
+/// TablePlus); macOS: a standard title bar titled "Settings".
 pub fn open_settings_window<R: Runtime>(
     app: &AppHandle<R>,
     from: Option<&str>,
@@ -777,7 +777,7 @@ fn build_settings_window<R: Runtime>(app: &AppHandle<R>, from: Option<&str>) -> 
     config.maximized = false;
     config.fullscreen = false;
     // TablePlus for Windows's Settings window has a close button only.
-    config.minimizable = !cfg!(windows);
+    config.minimizable = cfg!(target_os = "macos");
     #[cfg(target_os = "macos")]
     {
         config.title_bar_style = tauri::TitleBarStyle::Visible;
@@ -814,14 +814,9 @@ fn build_settings_window<R: Runtime>(app: &AppHandle<R>, from: Option<&str>) -> 
     // Shown by its renderer once the section is laid out, so it never shows empty.
     config.visible = false;
     let window = WebviewWindowBuilder::from_config(app, &config)?.build()?;
-    #[cfg(windows)]
+    #[cfg(not(target_os = "macos"))]
     if let Err(e) = own_title_bar(&window).and_then(|()| fit_to_work_area(&window, false)) {
         log::warn!("could not set up the Settings window: {e}");
-    }
-    // Linux: the app menu is every window's; Settings has none (TablePlus's has no menu bar).
-    #[cfg(target_os = "linux")]
-    if let Err(e) = window.hide_menu() {
-        log::warn!("could not hide the Settings window's menu: {e}");
     }
     log::info!("opened the Settings window");
     reveal_if_still_hidden(window);
@@ -852,7 +847,7 @@ pub fn route_profile<R: Runtime>(
 }
 
 /// Opens a new window like the main one (cascaded from the focused window), with `handoff` parked
-/// for its renderer. Returns its label. `welcome` (macOS and Windows, no handoff): the window is
+/// for its renderer. Returns its label. `welcome` (no handoff): the window is
 /// asked for to show the connection list, so the one Welcome window comes up instead of another
 /// plain window.
 pub fn open_window<R: Runtime>(
@@ -862,7 +857,6 @@ pub fn open_window<R: Runtime>(
 ) -> tauri::Result<String> {
     if welcome
         && handoff.is_none()
-        && cfg!(any(target_os = "macos", windows))
         && let Some(label) = show_welcome_window(app)?
     {
         return Ok(label);
@@ -890,11 +884,11 @@ pub fn open_window<R: Runtime>(
             return Err(e);
         }
     };
-    #[cfg(windows)]
+    #[cfg(not(target_os = "macos"))]
     if let Err(e) = own_title_bar(&window).and_then(|()| fit_to_work_area(&window, true)) {
         log::warn!("could not set up window {label}: {e}");
     }
-    // Windows and macOS: built hidden like the main window; its renderer shows it.
+    // Built hidden like the main window; its renderer shows it.
     reveal_if_still_hidden(window);
     registry.born(&label);
     log::info!("opened window {label}");
@@ -942,19 +936,35 @@ pub fn fit_frame(window: Frame, area: Frame) -> Option<Fit> {
     (x != window.x || y != window.y).then_some(Fit::Move { x, y })
 }
 
-/// Windows: like TablePlus for Windows, the toolbar is the title bar (it drags the window and holds
+/// Windows and Linux: like TablePlus for Windows, the toolbar is the title bar (it drags the window and holds
 /// the minimize / maximize / close buttons) and there is no menu bar: the toolbar's ⋮ button pops
 /// the menu up (`popup_app_menu`). The hidden menu keeps its accelerators. Call it before
 /// `fit_to_work_area`, which measures the window's frame.
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn own_title_bar<R: Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::Result<()> {
     window.set_decorations(false)?;
     // The drop shadow and the resize border an undecorated window has none of otherwise.
     window.set_shadow(true)?;
-    window.hide_menu()
+    window.hide_menu()?;
+    // GTK: showing a window (`show_all`) shows its hidden menu bar again unless it opts out.
+    #[cfg(target_os = "linux")]
+    {
+        let w = window.clone();
+        window.run_on_main_thread(move || {
+            use gtk::prelude::*;
+            if let Ok(vbox) = w.default_vbox() {
+                for child in vbox.children() {
+                    if child.is::<gtk::MenuBar>() {
+                        child.set_no_show_all(true);
+                    }
+                }
+            }
+        })?;
+    }
+    Ok(())
 }
 
-/// Windows: the configured size (1280×820) is taller than a 768 px screen's work area, and a size
+/// Windows and Linux: the configured size (1280×820) is taller than a 768 px screen's work area, and a size
 /// saved on a bigger monitor may not fit either, so a window that sticks out of its monitor's work
 /// area (under the taskbar) is moved in, or resized to fit and (`maximize`) maximized when it is
 /// too big. Call it after the window-state plugin has restored the window (that happens while it
@@ -1054,7 +1064,7 @@ pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
             let app_windows_left = app_window_count(&remaining);
             let aux_left = remaining.len() - app_windows_left;
             if reopens_welcome(
-                cfg!(any(target_os = "macos", windows)),
+                true,
                 registry.is_quitting(),
                 held_connections,
                 app_windows_left,
@@ -1223,7 +1233,7 @@ mod tests {
         // Other windows left (or on their way): nothing to replace.
         assert!(!reopens_welcome(true, false, true, 1, 0));
         assert!(!reopens_welcome(true, false, true, 0, 1));
-        // Linux (no Welcome window) keeps its behaviour.
+        // A platform without a Welcome window would end the app.
         assert!(!reopens_welcome(false, false, true, 0, 0));
         let reg = WindowRegistry::default();
         assert!(!reg.welcome_pending());
