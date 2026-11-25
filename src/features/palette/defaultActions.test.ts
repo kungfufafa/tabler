@@ -19,6 +19,9 @@ vi.mock("@/lib/platform", async (importOriginal) => ({
   get isWindows() {
     return platform.windows;
   },
+  get windowsChrome() {
+    return platform.windows;
+  },
 }));
 vi.mock("@/hooks/useUnsavedGuard", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/hooks/useUnsavedGuard")>()),

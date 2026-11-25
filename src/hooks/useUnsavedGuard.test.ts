@@ -227,6 +227,24 @@ describe("attachQuitShortcut", () => {
     detach();
   });
 
+  it("Linux: Ctrl+Q quits through the broadcast, also from a clean window", () => {
+    const opts = { isDirty: vi.fn(() => false), broadcast: vi.fn(async () => {}), linux: true };
+    const detach = attachQuitShortcut(window, opts);
+    expect(press(cmdQ)).toBe(false);
+    expect(press({ code: "KeyQ", key: "q", ctrlKey: true })).toBe(true);
+    expect(opts.broadcast).toHaveBeenCalledTimes(1);
+    // AZERTY: Ctrl+A on the physical Q key selects; Ctrl+Q on the physical A key quits.
+    expect(press({ code: "KeyQ", key: "a", ctrlKey: true })).toBe(false);
+    expect(press({ code: "KeyA", key: "q", ctrlKey: true })).toBe(true);
+    expect(press({ code: "KeyQ", key: "Q", ctrlKey: true, shiftKey: true })).toBe(false);
+    // Russian: the physical Q key types й.
+    expect(press({ code: "KeyQ", key: "й", ctrlKey: true })).toBe(true);
+    // Dvorak: the physical Q key types an apostrophe.
+    expect(press({ code: "KeyQ", key: "'", ctrlKey: true })).toBe(false);
+    expect(opts.broadcast).toHaveBeenCalledTimes(3);
+    detach();
+  });
+
   it("ignores other Q combos", () => {
     const { opts, detach } = setup(true);
     expect(press({ code: "KeyQ", key: "q" })).toBe(false);

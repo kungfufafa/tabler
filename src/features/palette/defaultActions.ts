@@ -9,7 +9,7 @@ import { pendingCount } from "@/features/staging/model";
 import { cycleWorkspace } from "@/features/tabs/workspaces";
 import { requestWindowClose } from "@/hooks/useUnsavedGuard";
 import { resolveScope } from "@/lib/keys/useShortcuts";
-import { isWindows } from "@/lib/platform";
+import { windowsChrome } from "@/lib/platform";
 import { useConnectionsStore } from "@/stores/connections";
 import { useTableTabsStore } from "@/stores/tableTabs";
 import { isTableTab, useTabsStore } from "@/stores/tabs";
@@ -92,7 +92,7 @@ export function useDefaultActions(): void {
               )
             : undefined;
         if (shown) tabs().close(shown.id);
-        else if (!isWindows) void requestWindowClose();
+        else if (!windowsChrome) void requestWindowClose();
       }),
       // Tabs belong to the active connection's workspace (TablePlus): these stay inside it.
       actions.register("tab.close-all", () => tabs().closeAll(workspace())),

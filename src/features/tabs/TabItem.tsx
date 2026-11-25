@@ -15,7 +15,7 @@ import { useStructureStore } from "@/features/structure/store";
 import { formatCombo } from "@/lib/keys/combo";
 import { shortcutFor } from "@/lib/keys/keymap";
 import type { ActionId } from "@/features/palette/actions";
-import { isWindows } from "@/lib/platform";
+import { windowsChrome } from "@/lib/platform";
 import { accentColor } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { useConnectionsStore } from "@/stores/connections";
@@ -222,7 +222,7 @@ export function TabItem({
         // macOS puts the close button at the tab's left edge, Windows (TablePlus included) at its
         // right edge. The title keeps symmetric padding either way, so it stays centred. On
         // Windows the shown tab is already filled with the accent colour, so hover goes darker.
-        isWindows ? "hover:bg-foreground/10 right-1" : "hover:bg-accent left-1",
+        windowsChrome ? "hover:bg-foreground/10 right-1" : "hover:bg-accent left-1",
         // The open tab shows its close button. Tabs with unsaved work show a dot until hover.
         unsaved === 0 && !active && "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
       )}
@@ -291,7 +291,7 @@ export function TabItem({
             // macOS document tabs (TablePlus): the tabs share the whole bar in equal widths (one tab
             // spans it), down to 110px each; past that the row scrolls.
             "group focus-visible:ring-ring relative flex min-w-[110px] flex-[1_1_0] cursor-default items-center text-[12px] leading-4 transition-colors select-none focus-visible:ring-1 focus-visible:ring-inset",
-            isWindows
+            windowsChrome
               ? // TablePlus for Windows draws plain titles with no dividers, and the shown tab as a
                 // soft filled capsule inset in the bar.
                 "mx-0.5 my-1 rounded-md"
@@ -300,7 +300,7 @@ export function TabItem({
               ? [
                   "text-foreground font-medium forced-colors:outline forced-colors:-outline-offset-1 forced-colors:outline-[Highlight]",
                   // Fainter in the group of a split workspace that does not have the focus.
-                  isWindows
+                  windowsChrome
                     ? groupFocused
                       ? "bg-accent"
                       : "bg-accent/50"
@@ -312,18 +312,18 @@ export function TabItem({
                 ]
               : [
                   "text-muted-foreground hover:text-foreground",
-                  isWindows ? "hover:bg-accent/60" : "hover:bg-accent",
+                  windowsChrome ? "hover:bg-accent/60" : "hover:bg-accent",
                 ],
             isDragging && "bg-surface z-10 opacity-80 shadow-sm dark:shadow-none",
           )}
         >
-          {!isWindows && closeButton}
+          {!windowsChrome && closeButton}
           <span className="flex min-w-0 flex-1 items-center justify-center gap-2 px-7">
             <Icon
               className={cn(
                 "size-4 shrink-0",
                 // Windows keeps the bar calm: no brand colour on the shown tab's icon.
-                active && groupFocused && !isWindows ? "text-brand" : "text-muted-foreground",
+                active && groupFocused && !windowsChrome ? "text-brand" : "text-muted-foreground",
               )}
               aria-hidden
             />
@@ -333,7 +333,7 @@ export function TabItem({
               <span className={cn("truncate", preview && "italic")}>{tab.title}</span>
             )}
           </span>
-          {isWindows && closeButton}
+          {windowsChrome && closeButton}
         </div>
       </ContextMenuTrigger>
       <TabMenu tab={tab} />

@@ -19,6 +19,9 @@ vi.mock("@/lib/platform", async (importOriginal) => ({
   get isWindows() {
     return platform.windows;
   },
+  get windowsChrome() {
+    return platform.windows;
+  },
 }));
 
 /** The strip as the shell mounts it: the unsaved-changes dialog lives next to it. */

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { isMac } from "@/lib/keys/combo";
-import { isWindows } from "@/lib/platform";
+import { windowsChrome } from "@/lib/platform";
 
 /**
  * The shape a window takes (macOS and Windows, like TablePlus): the small fixed **Welcome** window while it
@@ -13,15 +13,15 @@ import { isWindows } from "@/lib/platform";
  */
 export type WindowShape = "welcome" | "workspace";
 
-/** Linux keeps the connection list inside the one window for now. */
-export const shapedWindows: boolean = isMac || isWindows;
+/** Every platform has the Welcome window and the workspace windows. */
+export const shapedWindows: boolean = isMac || windowsChrome;
 
 /**
  * The Welcome window (logical pixels): fixed, like TablePlus's. TablePlus for Windows's client
  * area is 746×529 (measured at 150 % on Windows 11), taller than the macOS one; `WELCOME_SIZE` in
  * `src-tauri/src/windows.rs` matches.
  */
-export const WELCOME_SIZE: { readonly width: number; readonly height: number } = isWindows
+export const WELCOME_SIZE: { readonly width: number; readonly height: number } = windowsChrome
   ? { width: 746, height: 529 }
   : { width: 760, height: 480 };
 /**

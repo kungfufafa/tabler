@@ -1152,15 +1152,15 @@ pub fn run() {
             // The main window (built from tauri.conf.json and restored by the window-state
             // plugin before `setup`) back inside the screen.
             if let Some(main) = app.get_webview_window(windows::MAIN_WINDOW) {
-                #[cfg(windows)]
+                #[cfg(not(target_os = "macos"))]
                 if let Err(e) = windows::restore_main_frame(&main)
                     .and_then(|()| windows::own_title_bar(&main))
                     .and_then(|()| windows::fit_to_work_area(&main, false))
                 {
                     log::warn!("could not set up the main window: {e}");
                 }
-                // Built hidden on Windows and macOS (tauri.windows.conf.json,
-                // tauri.macos.conf.json): its renderer shows it. Linux builds it visible.
+                // Built hidden (tauri.windows.conf.json, tauri.macos.conf.json,
+                // tauri.linux.conf.json): its renderer shows it.
                 windows::reveal_if_still_hidden(main);
             }
             // The app lock: sleep and screen lock lock every window.

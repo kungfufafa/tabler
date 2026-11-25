@@ -4,6 +4,7 @@ import { useStructureStore } from "@/features/structure/store";
 import { ipc, isTauri } from "@/lib/ipc";
 import { broadcastEvent, listenEvent } from "@/lib/ipc/events";
 import { comboFromEvent, isMac } from "@/lib/keys/combo";
+import { isLinux } from "@/lib/platform";
 import { hasUnsaved, subscribeWindowWork, useTabsStore } from "@/stores/tabs";
 import { useTableTabsStore } from "@/stores/tableTabs";
 
@@ -115,6 +116,12 @@ export function attachBeforeUnload(
  * Quit from the Dock (and logout / shutdown) sends `terminate:`; the backend adds the
  * `applicationShouldTerminate:` that tao 0.37 lacks and, while `createUnsavedReporter` says
  * something is unsaved, cancels it and emits `app:quit-requested` as well (see docs/qa-macos.md).
+ *
+ * `linux`: Ctrl+Q, also in a clean window. GTK does not fire the accelerators of the hidden menu
+ * bar (`own_title_bar`), so the key would do nothing otherwise. It matches the typed Q (`key`, like
+ * the GTK accelerator), not the physical key: on AZERTY the physical Q key types A. A layout that
+ * types a non-Latin letter there (Cyrillic `й`) falls back to the physical Q key, as GTK does;
+ * punctuation there (Dvorak `'`) is not Q.
  */
 export function attachQuitShortcut(
   target: Pick<Window, "addEventListener" | "removeEventListener">,
@@ -124,12 +131,22 @@ export function attachQuitShortcut(
     broadcast?: () => Promise<void>;
     /** When the broadcast failed: this window handles the quit alone. */
     fallback?: () => void;
+    linux?: boolean;
   },
 ): () => void {
   const broadcast = opts.broadcast ?? (() => broadcastEvent("app:quit-requested", null));
   const fallback = opts.fallback ?? (() => handleQuitRequest());
+  const isQuit = (e: KeyboardEvent) =>
+    opts.linux
+      ? e.ctrlKey &&
+        !e.shiftKey &&
+        !e.altKey &&
+        !e.metaKey &&
+        (e.key.toLowerCase() === "q" ||
+          (/^\p{L}$/u.test(e.key) && !/^[a-z]$/i.test(e.key) && e.code === "KeyQ"))
+      : comboFromEvent(e, true) === "Mod+Q" && opts.isDirty();
   const onKeyDown = (e: KeyboardEvent) => {
-    if (comboFromEvent(e, true) !== "Mod+Q" || !opts.isDirty()) return;
+    if (!isQuit(e)) return;
     e.preventDefault();
     e.stopPropagation();
     void broadcast().catch(fallback);
@@ -270,7 +287,10 @@ export function useUnsavedGuard(): void {
     const reportUnsaved = createUnsavedReporter(hasUnsaved, ipc.app.setUnsaved);
     const unsubscribeReport = subscribeUnsaved(reportUnsaved);
     reportUnsaved();
-    const detachQuit = isMac ? attachQuitShortcut(window, { isDirty: hasUnsaved }) : undefined;
+    const detachQuit =
+      isMac || isLinux
+        ? attachQuitShortcut(window, { isDirty: hasUnsaved, linux: isLinux })
+        : undefined;
     let unlistenQuit: (() => void) | undefined;
     let disposed = false;
     void listenEvent("app:quit-requested", () => handleQuitRequest()).then((u) => {

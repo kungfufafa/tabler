@@ -409,7 +409,7 @@ function LeftItems({ items, text }: { items: readonly ToolbarItemId[]; text: boo
  * Board (once something handles it) and the panel toggles. The empty space drags the window. The
  * traffic lights sit in the left inset (gone in fullscreen). The launcher shows only the title.
  * On Windows the toolbar is the title bar without an inset: the ⋮ app menu on the left, the window
- * buttons on the right, and the launcher shows just those two. Linux shows no launcher toolbar.
+ * buttons on the right, and the launcher shows just those two. Linux looks like Windows.
  */
 export function Toolbar({ launcher }: { launcher: boolean }) {
   const fullscreen = useWindowFullscreen();
