@@ -119,7 +119,8 @@ export function attachBeforeUnload(
  *
  * `linux`: Ctrl+Q, also in a clean window. GTK does not fire the accelerators of the hidden menu
  * bar (`own_title_bar`), so the key would do nothing otherwise. It matches the typed Q (`key`, like
- * the GTK accelerator), not the physical key: on AZERTY the physical Q key types A.
+ * the GTK accelerator), not the physical key: on AZERTY the physical Q key types A. A layout that
+ * types no Latin letter there (Cyrillic `й`) falls back to the physical Q key, as GTK does.
  */
 export function attachQuitShortcut(
   target: Pick<Window, "addEventListener" | "removeEventListener">,
@@ -136,7 +137,11 @@ export function attachQuitShortcut(
   const fallback = opts.fallback ?? (() => handleQuitRequest());
   const isQuit = (e: KeyboardEvent) =>
     opts.linux
-      ? e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "q"
+      ? e.ctrlKey &&
+        !e.shiftKey &&
+        !e.altKey &&
+        !e.metaKey &&
+        (e.key.toLowerCase() === "q" || (!/^[a-z]$/i.test(e.key) && e.code === "KeyQ"))
       : comboFromEvent(e, true) === "Mod+Q" && opts.isDirty();
   const onKeyDown = (e: KeyboardEvent) => {
     if (!isQuit(e)) return;

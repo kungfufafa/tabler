@@ -237,7 +237,9 @@ describe("attachQuitShortcut", () => {
     expect(press({ code: "KeyQ", key: "a", ctrlKey: true })).toBe(false);
     expect(press({ code: "KeyA", key: "q", ctrlKey: true })).toBe(true);
     expect(press({ code: "KeyQ", key: "Q", ctrlKey: true, shiftKey: true })).toBe(false);
-    expect(opts.broadcast).toHaveBeenCalledTimes(2);
+    // Russian: the physical Q key types й.
+    expect(press({ code: "KeyQ", key: "й", ctrlKey: true })).toBe(true);
+    expect(opts.broadcast).toHaveBeenCalledTimes(3);
     detach();
   });
 
