@@ -13,6 +13,7 @@ import { KbdHint } from "@/components/KbdHint";
 import { useDirtyDialogGuard } from "@/hooks/useDirtyDialogGuard";
 import { cn } from "@/lib/utils";
 import type { GridColumn } from "../types";
+import { useDraftWork } from "../useDraftWork";
 import { jsonError, reformatJson } from "./json";
 import { commitTabSoon, isSaveKey } from "./saveKey";
 import { insertAtCaret } from "./useGrabFocus";
@@ -41,6 +42,7 @@ export function JsonEditorDialog({
   const [text, setText] = useState(initialText);
   const ref = useRef<HTMLTextAreaElement>(null);
   const error = useMemo(() => jsonError(text), [text]);
+  useDraftWork(text !== initialText, col.name);
   // A stray Escape or click beside the dialog asks before it throws the edited JSON away.
   const guard = useDirtyDialogGuard({
     dirty: text !== initialText,

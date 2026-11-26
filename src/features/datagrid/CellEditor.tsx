@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { Value } from "@/lib/ipc";
-import { registerWindowWork } from "@/stores/tabs";
-import { parseCellText } from "./cellText";
+import { editText } from "@/lib/values";
+import { bytesHex, parseCellText } from "./cellText";
 import { useLacksFields } from "./lacksFields";
 import { ChoiceSelect } from "./editors/ChoiceSelect";
 import { InlineInput } from "./editors/InlineInput";
@@ -12,6 +12,7 @@ import { editorFor, NULL_CHOICE, type EditorExit } from "./editors/registry";
 import type { CaretPlacement } from "./editors/useGrabFocus";
 import { emptyBecomesNull } from "./setValue";
 import type { GridColumn } from "./types";
+import { useDraftWork } from "./useDraftWork";
 
 export type { EditorExit } from "./editors/registry";
 
@@ -95,16 +96,11 @@ export function CellEditor({
   const [error, setError] = useState<string | null>(null);
   const done = useRef(false);
   const lacksFields = useLacksFields();
-  // Text typed here is not staged until the editor commits: until then it is the window's own
-  // unsaved work, so closing the window or quitting asks first instead of dropping it.
+  // The editor's text differs from the stored value's: typed here, or reopened from a dropped
+  // invalid edit.
   const [openingText] = useState(text);
-  const edited = typed || text !== openingText;
-  useEffect(() => {
-    if (!edited) return;
-    return registerWindowWork(() => [
-      { id: "cell-editor", title: `Edit of ${col.name}`, count: 1 },
-    ]);
-  }, [edited, col.name]);
+  const storedText = previous.t === "bytes" ? bytesHex(previous.v.base64) : editText(previous);
+  useDraftWork(typed || text !== openingText || initialText !== storedText, col.name);
   const anchorRef = useRef<HTMLDivElement>(null);
 
   const commitValue = (value: Value, exit: EditorExit) => {
