@@ -5,7 +5,7 @@
 
 use crate::appdb::AppDb;
 use crate::error::AppError;
-use crate::secrets::Backend;
+use crate::secrets::{Backend, NO_KEYCHAIN, no_keychain};
 use crate::types::assistant::AssistantProvider;
 
 const SERVICE: &str = "tabler";
@@ -27,8 +27,11 @@ impl KeyStore {
         match self.backend {
             Backend::File => self.appdb.get_secret(account),
             Backend::Keychain => tokio::task::spawn_blocking(move || {
-                let entry = keyring::v1::Entry::new(SERVICE, account)
-                    .map_err(|e| AppError::Secrets(e.to_string()))?;
+                let entry = match keyring::v1::Entry::new(SERVICE, account) {
+                    Ok(entry) => entry,
+                    Err(e) if no_keychain(&e) => return Ok(None),
+                    Err(e) => return Err(AppError::Secrets(e.to_string())),
+                };
                 match entry.get_password() {
                     Ok(p) => Ok(Some(p)),
                     Err(keyring::v1::Error::NoEntry) => Ok(None),
@@ -59,8 +62,12 @@ impl KeyStore {
                 None => self.appdb.delete_secret(account),
             },
             Backend::Keychain => tokio::task::spawn_blocking(move || {
-                let entry = keyring::v1::Entry::new(SERVICE, account)
-                    .map_err(|e| AppError::Secrets(e.to_string()))?;
+                let entry = match keyring::v1::Entry::new(SERVICE, account) {
+                    Ok(entry) => entry,
+                    Err(e) if no_keychain(&e) && key.is_none() => return Ok(()),
+                    Err(e) if no_keychain(&e) => return Err(AppError::Secrets(NO_KEYCHAIN.into())),
+                    Err(e) => return Err(AppError::Secrets(e.to_string())),
+                };
                 match key {
                     Some(k) => entry
                         .set_password(&k)

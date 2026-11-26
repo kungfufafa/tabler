@@ -91,6 +91,29 @@ fn keychain_error(kind: SecretKind, e: keyring::v1::Error) -> AppError {
     }
 }
 
+/// The message of a save that has no system keychain to go to.
+pub(crate) const NO_KEYCHAIN: &str = "No system keychain is available to save this in. On Linux, \
+install and unlock a Secret Service keyring (GNOME Keyring or KWallet), or set the password to \
+\"Ask every time\"";
+
+/// The message of a read that must find the saved passwords but has no system keychain to read.
+pub(crate) const NO_KEYCHAIN_READ: &str = "No system keychain is available to read the saved \
+passwords from. On Linux, start and unlock the Secret Service keyring (GNOME Keyring or KWallet)";
+
+/// The system keychain could not be opened at all: Linux without a Secret Service (no D-Bus
+/// session, no GNOME Keyring or KWallet). Nothing can have been stored there, so a read finds
+/// nothing and a delete has nothing to do; only a save fails.
+pub(crate) fn no_keychain(e: &keyring::v1::Error) -> bool {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let none = matches!(e, keyring::v1::Error::NoDefaultStore);
+    if none {
+        WARNED.call_once(|| {
+            log::warn!("no system keychain (Secret Service): secrets cannot be saved")
+        });
+    }
+    none
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Keychain,
@@ -155,8 +178,11 @@ impl Secrets {
         match self.backend {
             Backend::File => self.appdb.get_secret(&key),
             Backend::Keychain => tokio::task::spawn_blocking(move || {
-                let entry = keyring::v1::Entry::new(SERVICE, &key)
-                    .map_err(|e| AppError::Secrets(e.to_string()))?;
+                let entry = match keyring::v1::Entry::new(SERVICE, &key) {
+                    Ok(entry) => entry,
+                    Err(e) if no_keychain(&e) => return Ok(None),
+                    Err(e) => return Err(AppError::Secrets(e.to_string())),
+                };
                 let read = if kind.as_bytes() {
                     entry.get_secret().and_then(|bytes| {
                         String::from_utf8(bytes)
@@ -187,8 +213,13 @@ impl Secrets {
         match self.backend {
             Backend::File => self.appdb.set_secret(&key, &value),
             Backend::Keychain => tokio::task::spawn_blocking(move || {
-                let entry = keyring::v1::Entry::new(SERVICE, &key)
-                    .map_err(|e| AppError::Secrets(e.to_string()))?;
+                let entry = keyring::v1::Entry::new(SERVICE, &key).map_err(|e| {
+                    if no_keychain(&e) {
+                        AppError::Secrets(NO_KEYCHAIN.into())
+                    } else {
+                        AppError::Secrets(e.to_string())
+                    }
+                })?;
                 if kind.as_bytes() {
                     entry.set_secret(value.as_bytes())
                 } else {
@@ -206,8 +237,11 @@ impl Secrets {
         match self.backend {
             Backend::File => self.appdb.delete_secret(&key),
             Backend::Keychain => tokio::task::spawn_blocking(move || {
-                let entry = keyring::v1::Entry::new(SERVICE, &key)
-                    .map_err(|e| AppError::Secrets(e.to_string()))?;
+                let entry = match keyring::v1::Entry::new(SERVICE, &key) {
+                    Ok(entry) => entry,
+                    Err(e) if no_keychain(&e) => return Ok(()),
+                    Err(e) => return Err(AppError::Secrets(e.to_string())),
+                };
                 match entry.delete_credential() {
                     Ok(()) | Err(keyring::v1::Error::NoEntry) => Ok(()),
                     Err(e) => Err(AppError::Secrets(e.to_string())),
@@ -223,6 +257,23 @@ impl Secrets {
             self.delete(profile_id, *kind).await?;
         }
         Ok(())
+    }
+
+    /// Fails when the system keychain cannot be opened at all, for a caller that must not take
+    /// "nothing stored" for an answer (an export asked to carry the passwords).
+    pub async fn require_store(&self) -> Result<(), AppError> {
+        match self.backend {
+            Backend::File => Ok(()),
+            Backend::Keychain => tokio::task::spawn_blocking(|| {
+                match keyring::v1::Entry::new(SERVICE, "tabler.probe") {
+                    Ok(_) => Ok(()),
+                    Err(e) if no_keychain(&e) => Err(AppError::Secrets(NO_KEYCHAIN_READ.into())),
+                    Err(e) => Err(AppError::Secrets(e.to_string())),
+                }
+            })
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?,
+        }
     }
 
     pub async fn copy_all(&self, from: Uuid, to: Uuid) -> Result<(), AppError> {
@@ -985,6 +1036,16 @@ impl CommandPassword {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_missing_keychain_reads_as_nothing_stored() {
+        assert!(super::no_keychain(&keyring::v1::Error::NoDefaultStore));
+        assert!(!super::no_keychain(&keyring::v1::Error::NoEntry));
+        assert!(!super::no_keychain(&keyring::v1::Error::Invalid(
+            "x".into(),
+            "y".into()
+        )));
+    }
+
     use super::*;
 
     #[tokio::test]
