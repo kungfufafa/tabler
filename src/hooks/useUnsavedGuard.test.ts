@@ -9,7 +9,9 @@ import {
   attachBeforeUnload,
   attachQuitShortcut,
   createUnsavedReporter,
+  closeWindowNow,
   createWindowCloseGuard,
+  forgetQuitRequest,
   handleQuitRequest,
   requestWindowClose,
   subscribeUnsaved,
@@ -260,6 +262,34 @@ describe("attachQuitShortcut", () => {
 });
 
 describe("handleQuitRequest", () => {
+  it("answers the quit when the window it asked about closes, so the app exits", async () => {
+    handleQuitRequest(
+      () => false,
+      async () => {},
+      async () => {},
+      async () => {},
+    );
+    const quit = vi.fn(async () => {});
+    await closeWindowNow(quit);
+    expect(quit).toHaveBeenCalledTimes(1);
+    // Once: a later close of the window is a close, not a quit.
+    await closeWindowNow(quit);
+    expect(quit).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not quit on a close after the user kept their work", async () => {
+    handleQuitRequest(
+      () => false,
+      async () => {},
+      async () => {},
+      async () => {},
+    );
+    forgetQuitRequest();
+    const quit = vi.fn(async () => {});
+    await closeWindowNow(quit);
+    expect(quit).not.toHaveBeenCalled();
+  });
+
   it("acknowledges the request before deciding", () => {
     const order: string[] = [];
     const acknowledge = vi.fn(async () => void order.push("ack"));

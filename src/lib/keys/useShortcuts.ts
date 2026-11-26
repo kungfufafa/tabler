@@ -43,6 +43,11 @@ function isTextEntry(el: Element | null): boolean {
   return el.matches("input, textarea, select");
 }
 
+/** F1…F24. */
+function isFunctionKey(e: KeyboardEvent): boolean {
+  return /^F([1-9]|1\d|2[0-4])$/.test(e.key);
+}
+
 let capturing = 0;
 
 /**
@@ -112,8 +117,9 @@ export function KeyboardProvider({ children }: { children: ReactNode }) {
       if (e.defaultPrevented || capturing > 0) return;
       const combo = comboFromEvent(e);
       const target = e.target instanceof Element ? e.target : document.activeElement;
-      // Shortcuts without a modifier (Space for the row detail…) never steal typing.
-      if (!e.metaKey && !e.ctrlKey && !e.altKey && isTextEntry(target)) return;
+      // Shortcuts without a modifier (Space for the row detail…) never steal typing. A function
+      // key types nothing: F10 still pops the app menu from the SQL editor.
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && !isFunctionKey(e) && isTextEntry(target)) return;
       const scope = resolveScope(target);
       const def = findShortcut(combo, scope);
       if (!def) return;

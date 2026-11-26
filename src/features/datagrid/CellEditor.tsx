@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { Value } from "@/lib/ipc";
-import { parseCellText } from "./cellText";
+import { editText } from "@/lib/values";
+import { bytesHex, parseCellText } from "./cellText";
 import { useLacksFields } from "./lacksFields";
 import { ChoiceSelect } from "./editors/ChoiceSelect";
 import { InlineInput } from "./editors/InlineInput";
@@ -11,6 +12,7 @@ import { editorFor, NULL_CHOICE, type EditorExit } from "./editors/registry";
 import type { CaretPlacement } from "./editors/useGrabFocus";
 import { emptyBecomesNull } from "./setValue";
 import type { GridColumn } from "./types";
+import { useDraftWork } from "./useDraftWork";
 
 export type { EditorExit } from "./editors/registry";
 
@@ -94,6 +96,11 @@ export function CellEditor({
   const [error, setError] = useState<string | null>(null);
   const done = useRef(false);
   const lacksFields = useLacksFields();
+  // The editor's text differs from the stored value's: typed here, or reopened from a dropped
+  // invalid edit.
+  const [openingText] = useState(text);
+  const storedText = previous.t === "bytes" ? bytesHex(previous.v.base64) : editText(previous);
+  useDraftWork(typed || text !== openingText || initialText !== storedText, col.name);
   const anchorRef = useRef<HTMLDivElement>(null);
 
   const commitValue = (value: Value, exit: EditorExit) => {
