@@ -1056,7 +1056,7 @@ function GeneralFields({
                       if (v !== "keychain") setValue("password", "");
                     }}
                   >
-                    <SelectTrigger aria-label="Password storage" className="w-40 shrink-0">
+                    <SelectTrigger aria-label="Password storage" className="w-52 shrink-0">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>

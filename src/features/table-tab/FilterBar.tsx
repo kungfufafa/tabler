@@ -848,7 +848,7 @@ export function FilterBar({
           <span
             data-testid="filter-keys"
             aria-hidden
-            className="text-muted-foreground truncate text-[11px] @max-lg:hidden"
+            className="text-muted-foreground truncate text-xs @max-lg:hidden"
           >
             {legendText()}
           </span>
