@@ -227,8 +227,12 @@ describe("attachQuitShortcut", () => {
     detach();
   });
 
-  it("Linux: Ctrl+Q quits through the broadcast, also from a clean window", () => {
-    const opts = { isDirty: vi.fn(() => false), broadcast: vi.fn(async () => {}), linux: true };
+  it("Windows and Linux: Ctrl+Q quits through the broadcast, also from a clean window", () => {
+    const opts = {
+      isDirty: vi.fn(() => false),
+      broadcast: vi.fn(async () => {}),
+      ownTitleBar: true,
+    };
     const detach = attachQuitShortcut(window, opts);
     expect(press(cmdQ)).toBe(false);
     expect(press({ code: "KeyQ", key: "q", ctrlKey: true })).toBe(true);
