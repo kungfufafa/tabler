@@ -1,5 +1,6 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Value } from "@/lib/ipc";
+import { registerWindowWork } from "@/stores/tabs";
 import { parseCellText } from "./cellText";
 import { useLacksFields } from "./lacksFields";
 import { ChoiceSelect } from "./editors/ChoiceSelect";
@@ -94,6 +95,16 @@ export function CellEditor({
   const [error, setError] = useState<string | null>(null);
   const done = useRef(false);
   const lacksFields = useLacksFields();
+  // Text typed here is not staged until the editor commits: until then it is the window's own
+  // unsaved work, so closing the window or quitting asks first instead of dropping it.
+  const [openingText] = useState(text);
+  const edited = typed || text !== openingText;
+  useEffect(() => {
+    if (!edited) return;
+    return registerWindowWork(() => [
+      { id: "cell-editor", title: `Edit of ${col.name}`, count: 1 },
+    ]);
+  }, [edited, col.name]);
   const anchorRef = useRef<HTMLDivElement>(null);
 
   const commitValue = (value: Value, exit: EditorExit) => {

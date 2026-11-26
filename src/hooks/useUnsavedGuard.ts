@@ -190,8 +190,25 @@ export function handleQuitRequest(
   bringForward: () => Promise<void> = bringWindowForward,
 ): void {
   void acknowledge().catch(() => undefined);
-  if (request()) void quit().catch(() => undefined);
-  else void bringForward().catch(() => undefined);
+  if (request()) {
+    quitAsked = false;
+    void quit().catch(() => undefined);
+  } else {
+    quitAsked = true;
+    void bringForward().catch(() => undefined);
+  }
+}
+
+/**
+ * A quit is waiting on this window (`handleQuitRequest` could not answer right away): its dialog
+ * is up, or its auto-saved query text is being written. Closing the window then answers the quit
+ * (`closeWindowNow`), so the last workspace window does not give way to the Welcome window.
+ */
+let quitAsked = false;
+
+/** The user kept their work: the quit this window was asked for is off. */
+export function forgetQuitRequest(): void {
+  quitAsked = false;
 }
 
 /**
@@ -217,8 +234,16 @@ export function createUnsavedReporter(
 
 let activeGuard: WindowCloseGuard | null = null;
 
-/** Called by the unsaved-changes dialog once the user chose to discard and quit. */
-export async function closeWindowNow(): Promise<void> {
+/**
+ * Called by the unsaved-changes dialog once the user chose to discard and quit. During a quit it
+ * tells the backend first that this window is ready (`quit_app`), so the app exits instead of
+ * showing the Welcome window in place of the last workspace window.
+ */
+export async function closeWindowNow(quit: () => Promise<void> = ipc.app.quit): Promise<void> {
+  if (quitAsked) {
+    quitAsked = false;
+    await quit().catch(() => undefined);
+  }
   await activeGuard?.closeNow();
 }
 
