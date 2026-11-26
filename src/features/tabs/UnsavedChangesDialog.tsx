@@ -16,7 +16,7 @@ import { openPendingSheet } from "@/features/objects/pendingActions";
 import { actions } from "@/features/palette/actions";
 import { pendingCount } from "@/features/staging/model";
 import { structurePendingCount } from "@/features/structure/store";
-import { closeWindowNow } from "@/hooks/useUnsavedGuard";
+import { closeWindowNow, forgetQuitRequest } from "@/hooks/useUnsavedGuard";
 import { ipc } from "@/lib/ipc";
 import { comboFromEvent } from "@/lib/keys/combo";
 import { useTableTabsStore } from "@/stores/tableTabs";
@@ -39,7 +39,9 @@ function keepWork(): void {
   const tabs = useTabsStore.getState();
   const request = tabs.closeRequest;
   tabs.cancelClose();
-  if (request?.kind === "window") void ipc.windows.cancelQuit().catch(() => undefined);
+  if (request?.kind !== "window") return;
+  forgetQuitRequest();
+  void ipc.windows.cancelQuit().catch(() => undefined);
 }
 
 function plural(n: number, word: string): string {

@@ -8,6 +8,7 @@ import { dispatchMenuAction } from "@/hooks/useNativeMenu";
 import { useTabsStore } from "@/stores/tabs";
 import { useUiStore } from "@/stores/ui";
 import { isMac } from "./combo";
+import { KEYMAP, WINDOWS_KEYMAP } from "./keymap";
 import { isShortcutDispatch, KeyboardProvider, resolveScope, runShortcut } from "./useShortcuts";
 
 // jsdom has no layout: CodeMirror measures through these.
@@ -408,6 +409,22 @@ describe("⌘↩, ⌘R and the comment keys", () => {
     offs.splice(0).forEach((off) => off());
     const bare = mount(`<div data-scope="grid" data-testid="target" tabindex="0"></div>`);
     expect(press(bare, "C", "KeyC", { shiftKey: true }).defaultPrevented).toBe(true);
+  });
+
+  it("pops the app menu with F10 from the SQL editor, where plain keys type", () => {
+    if (!KEYMAP.some((d) => d.id === "ui.app-menu")) {
+      KEYMAP.push(...WINDOWS_KEYMAP);
+      offs.push(() => void KEYMAP.splice(KEYMAP.length - WINDOWS_KEYMAP.length));
+    }
+    const menu = register("ui.app-menu");
+    render(<KeyboardProvider>{null}</KeyboardProvider>);
+    const view = mountEditor(document.body.appendChild(document.createElement("div")), vi.fn());
+    offs.push(() => view.destroy());
+    const event = press(view.contentDOM, "F10", "F10", { metaKey: false, ctrlKey: false });
+    expect(menu).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+    press(view.contentDOM, "q", "KeyQ", { metaKey: false, ctrlKey: false });
+    expect(menu).toHaveBeenCalledTimes(1);
   });
 
   it("leaves the comment keys to the focused CodeMirror editor", () => {
