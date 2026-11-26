@@ -240,6 +240,21 @@ jobs:
           fi
           pnpm tauri build ${{ matrix.args }} "${bundles[@]}" --config "$RUNNER_TEMP/release.conf.json"
 
+      # The bundler notarizes the .app inside the .dmg, not the .dmg itself. A browser download of
+      # an unnotarized .dmg is quarantined and Gatekeeper refuses it as "damaged", so the .dmg gets
+      # its own notarization and stapled ticket.
+      - name: Notarize the .dmg
+        if: matrix.name == 'macos' && env.APPLE_ID != '' && env.APPLE_PASSWORD != '' && env.APPLE_TEAM_ID != ''
+        shell: bash
+        run: |
+          for dmg in src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg; do
+            xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" --wait --timeout 30m
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
+            spctl --assess --type open --context context:primary-signature -v "$dmg"
+          done
+
       - name: Upload the installer
         uses: actions/upload-artifact@v4
         with:
