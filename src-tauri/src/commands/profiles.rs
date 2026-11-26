@@ -655,6 +655,9 @@ pub async fn run_export(state: &AppState, req: ExportConnectionsRequest) -> Resu
             "Set a file password to export passwords and passphrases".into(),
         ));
     }
+    if req.include_passwords || req.include_ssh_secrets {
+        state.secrets.require_store().await?;
+    }
     let mut connections = Vec::new();
     for profile in state.appdb.list_profiles()? {
         if !req.profile_ids.contains(&profile.id) {
