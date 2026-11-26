@@ -4,7 +4,7 @@ import { useStructureStore } from "@/features/structure/store";
 import { ipc, isTauri } from "@/lib/ipc";
 import { broadcastEvent, listenEvent } from "@/lib/ipc/events";
 import { comboFromEvent, isMac } from "@/lib/keys/combo";
-import { isLinux } from "@/lib/platform";
+import { windowsChrome } from "@/lib/platform";
 import { hasUnsaved, subscribeWindowWork, useTabsStore } from "@/stores/tabs";
 import { useTableTabsStore } from "@/stores/tableTabs";
 
@@ -117,11 +117,11 @@ export function attachBeforeUnload(
  * `applicationShouldTerminate:` that tao 0.37 lacks and, while `createUnsavedReporter` says
  * something is unsaved, cancels it and emits `app:quit-requested` as well (see docs/qa-macos.md).
  *
- * `linux`: Ctrl+Q, also in a clean window. GTK does not fire the accelerators of the hidden menu
- * bar (`own_title_bar`), so the key would do nothing otherwise. It matches the typed Q (`key`, like
- * the GTK accelerator), not the physical key: on AZERTY the physical Q key types A. A layout that
- * types a non-Latin letter there (Cyrillic `й`) falls back to the physical Q key, as GTK does;
- * punctuation there (Dvorak `'`) is not Q.
+ * `ownTitleBar` (Windows and Linux): Ctrl+Q, also in a clean window. Neither OS fires the
+ * accelerators of the hidden native menu (`own_title_bar`), so the key would do nothing otherwise.
+ * It matches the typed Q (`key`, like a menu accelerator), not the physical key: on AZERTY the
+ * physical Q key types A. A layout that types a non-Latin letter there (Cyrillic `й`) falls back
+ * to the physical Q key, as GTK does; punctuation there (Dvorak `'`) is not Q.
  */
 export function attachQuitShortcut(
   target: Pick<Window, "addEventListener" | "removeEventListener">,
@@ -131,13 +131,13 @@ export function attachQuitShortcut(
     broadcast?: () => Promise<void>;
     /** When the broadcast failed: this window handles the quit alone. */
     fallback?: () => void;
-    linux?: boolean;
+    ownTitleBar?: boolean;
   },
 ): () => void {
   const broadcast = opts.broadcast ?? (() => broadcastEvent("app:quit-requested", null));
   const fallback = opts.fallback ?? (() => handleQuitRequest());
   const isQuit = (e: KeyboardEvent) =>
-    opts.linux
+    opts.ownTitleBar
       ? e.ctrlKey &&
         !e.shiftKey &&
         !e.altKey &&
@@ -313,8 +313,8 @@ export function useUnsavedGuard(): void {
     const unsubscribeReport = subscribeUnsaved(reportUnsaved);
     reportUnsaved();
     const detachQuit =
-      isMac || isLinux
-        ? attachQuitShortcut(window, { isDirty: hasUnsaved, linux: isLinux })
+      isMac || windowsChrome
+        ? attachQuitShortcut(window, { isDirty: hasUnsaved, ownTitleBar: windowsChrome })
         : undefined;
     let unlistenQuit: (() => void) | undefined;
     let disposed = false;
